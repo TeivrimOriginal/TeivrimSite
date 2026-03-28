@@ -1,41 +1,40 @@
 use serde::{Serialize, Deserialize};
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct User {
-    pub id: Uuid,
-    pub username: String,
-    pub email: String,
-    pub password_hash: String,
-    pub created_at: DateTime<Utc>,
-}
 
 #[derive(Debug, Deserialize)]
-pub struct RegisterRequest {
+pub struct UserReg {
     pub username: String,
-    pub email: String,
     pub password: String,
+    pub birth_date: String,
+    pub email: String,
+    pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LoginRequest {
+pub struct UserLogin {
     pub username: String,
     pub password: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SendMessageRequest {
-    pub from_user: String,
-    pub to_user: String,
-    pub content: String,
+#[derive(Debug, Serialize)]
+pub struct Response {
+    pub success: bool,
+    pub message: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Message {
-    pub id: Uuid,
-    pub from_user: String,
-    pub to_user: String,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
+#[derive(Debug, Serialize, Clone)]
+pub struct UserProfile {
+    pub id: i64,
+    pub username: String,
+    pub birth_date: String,
+    pub avatar_path: Option<String>,
+    pub email: String,
+    pub description: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UserSearchResult {
+    pub username: String,
+    pub avatar_path: Option<String>,
+    pub description: String,
 }
