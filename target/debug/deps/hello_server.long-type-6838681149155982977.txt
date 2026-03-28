@@ -1,4 +1,0 @@
-hyper::service::util::ServiceFn<fn(hyper::Request<Body>) -> impl Future<Output = Result<Response<Body>, Infallible>> {hello_world}, Body>
-for<'a> hyper::service::util::ServiceFn<fn(hyper::Request<Body>) -> impl Future<Output = Result<Response<Body>, Infallible>> {hello_world}, Body>: Service<&'a AddrStream>
-hyper::service::util::ServiceFn<fn(hyper::Request<Body>) -> impl Future<Output = Result<Response<Body>, Infallible>> {hello_world}, Body>: hyper::service::make::MakeServiceRef<AddrStream, Body>
-hyper::Server<AddrIncoming, hyper::service::util::ServiceFn<fn(hyper::Request<Body>) -> impl Future<Output = Result<Response<Body>, Infallible>> {hello_world}, Body>>
