@@ -1,73 +1,79 @@
-mod models;
+#![recursion_limit = "512"]
+
+mod api;
 mod db;
-mod handlers;
-mod templates;
+mod genres;
+mod loader;
+mod sources;
+mod translate;
 
-use axum::{
-    routing::{post, get},
-    Router,
-    extract::{Extension, Path},
-    response::Html,
-};
-use tower_http::services::ServeDir;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::fs;
+use actix_web::{web, App, HttpServer};
 
-#[tokio::main]
-async fn main() {
-    let pool = db::init_database().await;
-    
-    let current_dir = std::env::current_dir().expect("Не удалось получить текущую директорию");
-    let uploads_dir = current_dir.join("uploads").join("avatars");
-    
-    if !uploads_dir.exists() {
-        fs::create_dir_all(&uploads_dir).await.unwrap_or_default();
-        println!("✅ Директория создана: {}", uploads_dir.display());
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    println!("=== Anime Loader (RU-only mode) ===");
+
+    {
+        let conn = db::open().expect("DB open");
+        db::ensure_schema(&conn).expect("Schema");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap_or(0);
+        let ru_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM anime WHERE title_russian IS NOT NULL AND title_russian != ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        println!("[DB] записей на старте: {} (с русским: {})", count, ru_count);
     }
-    
-    let state = Arc::new(db::AppState {
-        db: pool,
-        sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+
+    // AniList — базовые данные (английский + метаданные)
+    tokio::spawn(async {
+        if let Err(e) = loader::load_anilist().await {
+            eprintln!("[AniList ERR] {}", e);
+        }
+        println!("\n=== AniList ЗАВЕРШЁН ===");
     });
-    
-    let app = Router::new()
-        .route("/", get(home_page))
-        .route("/login-page", get(login_page))
-        .route("/register-page", get(register_page))
-        .route("/profile/:username", get(profile_page))
-        .route("/register", post(handlers::register))
-        .route("/login", post(handlers::login))
-        .route("/logout", post(handlers::logout))
-        .route("/api/profile/:username", get(handlers::get_profile))
-        .route("/api/profile/update", post(handlers::update_profile))
-        .route("/api/profile/avatar", post(handlers::upload_avatar))
-        .route("/api/search", get(handlers::search_users))
-        .route("/api/chats", get(handlers::get_chats))
-        .route("/message", post(handlers::send_message))
-        .route("/messages/:user1/:user2", get(handlers::get_messages))
-        .nest_service("/uploads", ServeDir::new("uploads"))
-        .layer(Extension(state));
-    
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("\n🚀 Сервер запущен: http://{}", addr);
-    
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
 
-async fn home_page() -> Html<String> {
-    templates::home_page()
-}
+    // Shikimori — русские названия (параллельно)
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        if let Err(e) = loader::load_shikimori().await {
+            eprintln!("[Shikimori ERR] {}", e);
+        }
+        println!("\n=== Shikimori ЗАВЕРШЁН ===");
+    });
 
-async fn login_page() -> Html<String> {
-    templates::login_page()
-}
+    // Сопоставление жанров — после загрузки
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        println!("[WORKER] Сопоставление жанров...");
+        if let Err(e) = genres::match_all_genres().await {
+            eprintln!("[Genres ERR] {}", e);
+        }
+        println!("[WORKER] Жанры готовы");
+    });
 
-async fn register_page() -> Html<String> {
-    templates::register_page()
-}
+    // ❌ Переводчик Google НЕ запускается
+    // ❌ Jikan НЕ запускается
 
-async fn profile_page(Path(username): Path<String>) -> Html<String> {
-    templates::profile_page(&username)
+    println!("\n=== СЕРВЕР: http://127.0.0.1:8082 ===\n");
+
+    HttpServer::new(|| {
+        App::new()
+            .route("/", web::get().to(api::index_html))
+            .route("/detail", web::get().to(api::detail_html))
+            .route("/api/list", web::get().to(api::api_list))
+            .route("/api/count", web::get().to(api::api_count))
+            .route("/api/filters", web::get().to(api::api_filters))
+            .route("/api/progress", web::get().to(api::api_progress))
+            .route("/api/genres", web::get().to(api::api_genres))
+            .route("/api/genres/{id}/anime", web::get().to(api::api_genre_anime))
+            .route("/api/anime/{id}", web::get().to(api::api_detail))
+    })
+    .bind(("127.0.0.1", 8082))?
+    .run()
+    .await
 }
