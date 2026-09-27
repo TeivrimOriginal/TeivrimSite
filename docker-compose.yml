@@ -1,0 +1,54 @@
+# Local development with the catalogue pre-imported.
+#
+#   docker compose up -d          start
+#   docker compose logs -f        watch the sync
+#
+# The first import walks ~20k titles from each source and takes a while at the
+# public rate limits; the API answers immediately with whatever has landed so
+# far, and /api/sync/status shows progress.
+
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      BIND_ADDR: 0.0.0.0
+      PORT: "8082"
+      DB_PATH: /app/data/AnimeData.db
+      LOADERS_ON_START: "1"
+      # Raise this if you set an AniList client id below.
+      SYNC_PAGE_SIZE: "50"
+      KITSU_ENRICH_LIMIT: "2000"
+      CORS_ORIGINS: "*"
+      # ANILIST_CLIENT_ID: ${ANILIST_CLIENT_ID}
+      # SYNC_ADMIN_TOKEN: ${SYNC_ADMIN_TOKEN}
+    volumes:
+      - anime-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # An API-only instance for a read replica or a second web node: it never
+  # imports, it just serves the database the primary wrote. Point it at the
+  # same volume read-only.
+  api-reader:
+    profiles: ["reader"]
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8083:8082"
+    environment:
+      BIND_ADDR: 0.0.0.0
+      PORT: "8082"
+      DB_PATH: /app/data/AnimeData.db
+      LOADERS_ON_START: "0"
+    volumes:
+      - anime-data:/app/data:ro
+
+volumes:
+  anime-data:

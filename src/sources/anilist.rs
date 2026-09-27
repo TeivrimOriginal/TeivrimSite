@@ -1,22 +1,42 @@
+//! AniList GraphQL API — the primary source: ids, titles, scores, relations,
+//! recommendations, tags and streaming links.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+
+pub const API: &str = "https://graphql.anilist.co";
+
+/// Sort enum values accepted by AniList. Pages are walked in several orders
+/// because no single order reaches every row of a catalogue this size.
+pub const SORTS: &[&str] = &[
+    "POPULARITY_DESC",
+    "SCORE_DESC",
+    "START_DATE_DESC",
+    "TRENDING_DESC",
+    "FAVOURITES_DESC",
+    "ID_DESC",
+    "ID",
+    "TITLE_ROMAJI",
+];
 
 #[derive(Debug, Deserialize)]
-pub struct AniListResp {
-    pub data: AniListData,
+pub struct Response {
+    pub data: Option<Data>,
+    #[serde(default)]
+    pub errors: Vec<GraphQLError>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AniListData {
+pub struct Data {
     #[serde(rename = "Page")]
-    pub page: AniListPage,
+    pub page: Page,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AniListPage {
+pub struct Page {
     #[serde(rename = "pageInfo")]
     pub page_info: PageInfo,
+    #[serde(rename = "media")]
     pub media: Vec<Media>,
 }
 
@@ -26,10 +46,15 @@ pub struct PageInfo {
     pub has_next_page: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize)]
+pub struct GraphQLError {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Media {
     pub id: i64,
+    #[serde(rename = "idMal")]
     pub id_mal: Option<i64>,
     pub title: Title,
     pub synonyms: Option<Vec<String>>,
@@ -40,31 +65,43 @@ pub struct Media {
     pub episodes: Option<i64>,
     pub chapters: Option<i64>,
     pub volumes: Option<i64>,
+    #[serde(rename = "countryOfOrigin")]
     pub country_of_origin: Option<String>,
+    #[serde(rename = "isAdult")]
     pub is_adult: Option<bool>,
+    #[serde(rename = "isLicensed")]
     pub is_licensed: Option<bool>,
+    #[serde(rename = "startDate")]
     pub start_date: Option<FuzzyDate>,
+    #[serde(rename = "endDate")]
     pub end_date: Option<FuzzyDate>,
     pub season: Option<String>,
+    #[serde(rename = "seasonYear")]
     pub season_year: Option<i64>,
+    #[serde(rename = "averageScore")]
     pub average_score: Option<i64>,
+    #[serde(rename = "meanScore")]
     pub mean_score: Option<i64>,
     pub popularity: Option<i64>,
     pub favourites: Option<i64>,
     pub trending: Option<i64>,
+    #[serde(rename = "coverImage")]
     pub cover_image: Option<CoverImage>,
+    #[serde(rename = "bannerImage")]
     pub banner_image: Option<String>,
     pub trailer: Option<Trailer>,
     pub genres: Option<Vec<String>>,
     pub tags: Option<Vec<Tag>>,
-    pub studios: Option<Studios>,
-    pub relations: Option<Relations>,
+    pub studios: Option<Connection<Studio>>,
+    pub relations: Option<RelationConnection>,
+    #[serde(rename = "externalLinks")]
     pub external_links: Option<Vec<ExternalLink>>,
+    #[serde(rename = "streamingEpisodes")]
     pub streaming_episodes: Option<Vec<StreamingEpisode>>,
-    pub recommendations: Option<Recommendations>,
+    pub recommendations: Option<RecommendationConnection>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Title {
     pub romaji: Option<String>,
     pub english: Option<String>,
@@ -73,73 +110,86 @@ pub struct Title {
     pub user_preferred: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FuzzyDate {
     pub year: Option<i64>,
     pub month: Option<i64>,
     pub day: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+impl FuzzyDate {
+    /// ISO date, or the longest prefix that is actually known
+    /// (`2024`, `2024-07`, `2024-07-14`).
+    pub fn to_iso(&self) -> Option<String> {
+        let y = self.year?;
+        match (self.month, self.day) {
+            (Some(m), Some(d)) => Some(format!("{:04}-{:02}-{:02}", y, m, d)),
+            (Some(m), None) => Some(format!("{:04}-{:02}", y, m)),
+            _ => Some(format!("{:04}", y)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CoverImage {
+    #[serde(rename = "extraLarge")]
     pub extra_large: Option<String>,
     pub large: Option<String>,
     pub medium: Option<String>,
     pub color: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Trailer {
     pub id: Option<String>,
     pub site: Option<String>,
     pub thumbnail: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Tag {
     pub name: Option<String>,
     pub rank: Option<i64>,
+    #[serde(rename = "isMediaSpoiler")]
     pub is_media_spoiler: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Studios {
-    pub nodes: Option<Vec<Studio>>,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Connection<T> {
+    pub nodes: Option<Vec<T>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Studio {
-    pub name: Option<String>,
-    pub is_animation_studio: Option<bool>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Relations {
+/// `relations` is the one connection that is edge-based rather than node-based.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RelationConnection {
     pub edges: Option<Vec<RelationEdge>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Studio {
+    pub name: Option<String>,
+    #[serde(rename = "isAnimationStudio")]
+    pub is_animation_studio: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RelationEdge {
+    #[serde(rename = "relationType")]
     pub relation_type: Option<String>,
     pub node: Option<RelationNode>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RelationNode {
     pub id: i64,
     pub title: Option<Title>,
     pub format: Option<String>,
     pub status: Option<String>,
+    #[serde(rename = "coverImage")]
     pub cover_image: Option<CoverImage>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExternalLink {
     pub id: i64,
     pub url: Option<String>,
@@ -148,8 +198,7 @@ pub struct ExternalLink {
     pub link_type: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StreamingEpisode {
     pub title: Option<String>,
     pub thumbnail: Option<String>,
@@ -157,202 +206,98 @@ pub struct StreamingEpisode {
     pub site: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Recommendations {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RecommendationConnection {
     pub nodes: Option<Vec<RecommendationNode>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RecommendationNode {
     pub rating: Option<i64>,
+    #[serde(rename = "mediaRecommendation")]
     pub media_recommendation: Option<RecommendedMedia>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RecommendedMedia {
     pub id: i64,
     pub title: Option<Title>,
     pub format: Option<String>,
+    #[serde(rename = "coverImage")]
     pub cover_image: Option<CoverImage>,
 }
 
+const MEDIA_FIELDS: &str = r#"
+    id idMal
+    title { romaji english native userPreferred }
+    synonyms format status description(asHtml: false)
+    duration episodes chapters volumes
+    countryOfOrigin isAdult isLicensed
+    startDate { year month day }
+    endDate   { year month day }
+    season seasonYear
+    averageScore meanScore popularity favourites trending
+    coverImage { extraLarge large medium color }
+    bannerImage
+    trailer { id site thumbnail }
+    genres
+    tags { name rank isMediaSpoiler }
+    studios(isMain: true) { nodes { name isAnimationStudio } }
+    relations {
+        edges {
+            relationType
+            node { id title { romaji english native } format status coverImage { large } }
+        }
+    }
+    externalLinks { id url site type }
+    streamingEpisodes { title thumbnail url site }
+    recommendations(sort: RATING_DESC, perPage: 12) {
+        nodes { rating mediaRecommendation { id title { romaji english native } format coverImage { large } } }
+    }
+"#;
+
 pub fn build_query(page: u32, per_page: u32, sort: &str) -> String {
+    let sort = if SORTS.contains(&sort) { sort } else { "POPULARITY_DESC" };
     format!(
-        r#"{{
-            Page(page: {}, perPage: {}) {{
-                pageInfo {{ hasNextPage }}
-                media(type: ANIME, sort: {}) {{
-                    id idMal
-                    title {{ romaji english native userPreferred }}
-                    synonyms
-                    format status description
-                    duration episodes chapters volumes
-                    countryOfOrigin isAdult isLicensed
-                    startDate {{ year month day }}
-                    endDate   {{ year month day }}
-                    season seasonYear
-                    averageScore meanScore popularity favourites trending
-                    coverImage {{ extraLarge large medium color }}
-                    bannerImage
-                    trailer {{ id site thumbnail }}
-                    genres
-                    tags {{ name rank isMediaSpoiler }}
-                    studios(isMain: true) {{ nodes {{ name isAnimationStudio }} }}
-                    relations {{
-                        edges {{
-                            relationType
-                            node {{
-                                id
-                                title {{ romaji english native }}
-                                format status
-                                coverImage {{ large }}
-                            }}
-                        }}
-                    }}
-                    externalLinks {{ id url site type }}
-                    streamingEpisodes {{ title thumbnail url site }}
-                    recommendations(sort: RATING_DESC, perPage: 10) {{
-                        nodes {{
-                            rating
-                            mediaRecommendation {{
-                                id
-                                title {{ romaji english native }}
-                                format
-                                coverImage {{ large }}
-                            }}
-                        }}
-                    }}
-                }}
+        r#"query {{
+            Page(page: {page}, perPage: {per_page}) {{
+                pageInfo {{ hasNextPage total }}
+                media(type: ANIME, sort: [{sort}]) {{ {MEDIA_FIELDS} }}
             }}
         }}"#,
-        page, per_page, sort
+        page = page,
+        per_page = per_page,
+        sort = sort,
     )
 }
 
+
+pub struct Fetched {
+    pub media: Vec<Media>,
+    pub has_next: bool,
+}
+
 pub async fn fetch_page(
-    client: &reqwest::Client,
+    up: &crate::upstream::Upstream,
     page: u32,
     per_page: u32,
     sort: &str,
-) -> Result<(Vec<Media>, bool), Box<dyn std::error::Error + Send + Sync>> {
-    let query = build_query(page, per_page, sort);
-
-    let resp = client
-        .post("https://graphql.anilist.co")
-        .json(&serde_json::json!({ "query": query }))
-        .send()
-        .await?;
-
-    let status = resp.status();
-
-    if status.as_u16() == 429 {
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(60);
-        eprintln!("[AniList RATE LIMIT] 429. Ждём {} сек...", retry_after);
-        tokio::time::sleep(Duration::from_secs(retry_after)).await;
-        return Err(format!("429 rate limited, retry after {}s", retry_after).into());
-    }
-
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {}", status, body).into());
-    }
-
-    let parsed: AniListResp = resp.json().await?;
-    let has_next = parsed.data.page.page_info.has_next_page;
-    Ok((parsed.data.page.media, has_next))
+) -> Result<Fetched, String> {
+    let body = serde_json::json!({ "query": build_query(page, per_page, sort) });
+    let value = up.post_json(API, &body).await?;
+    parse_page(value)
 }
 
-pub fn media_to_json_pieces(m: &Media) -> Value {
-    let studios_json = m
-        .studios
-        .as_ref()
-        .and_then(|s| s.nodes.as_ref())
-        .map(|nodes| {
-            serde_json::json!(nodes
-                .iter()
-                .map(|n| serde_json::json!({
-                    "name": n.name,
-                    "isAnimationStudio": n.is_animation_studio
-                }))
-                .collect::<Vec<_>>())
-        })
-        .unwrap_or(Value::Null);
 
-    let relations_json = m
-        .relations
-        .as_ref()
-        .and_then(|r| r.edges.as_ref())
-        .map(|edges| {
-            serde_json::json!(edges
-                .iter()
-                .filter_map(|e| e.node.as_ref().map(|n| serde_json::json!({
-                    "relationType": e.relation_type,
-                    "id": n.id,
-                    "title": n.title,
-                    "format": n.format,
-                    "status": n.status,
-                    "coverImage": n.cover_image.as_ref().and_then(|c| c.large.clone()),
-                })))
-                .collect::<Vec<_>>())
-        })
-        .unwrap_or(Value::Null);
-
-    let external_links_json = m
-        .external_links
-        .as_ref()
-        .map(|links| {
-            serde_json::json!(links
-                .iter()
-                .map(|l| serde_json::json!({
-                    "id": l.id, "url": l.url, "site": l.site, "type": l.link_type
-                }))
-                .collect::<Vec<_>>())
-        })
-        .unwrap_or(Value::Null);
-
-    let streaming_json = m
-        .streaming_episodes
-        .as_ref()
-        .map(|eps| {
-            serde_json::json!(eps
-                .iter()
-                .map(|e| serde_json::json!({
-                    "title": e.title, "thumbnail": e.thumbnail, "url": e.url, "site": e.site
-                }))
-                .collect::<Vec<_>>())
-        })
-        .unwrap_or(Value::Null);
-
-    let recs_json = m
-        .recommendations
-        .as_ref()
-        .and_then(|r| r.nodes.as_ref())
-        .map(|nodes| {
-            serde_json::json!(nodes
-                .iter()
-                .filter_map(|n| n.media_recommendation.as_ref().map(|mm| serde_json::json!({
-                    "rating": n.rating,
-                    "id": mm.id,
-                    "title": mm.title,
-                    "format": mm.format,
-                    "cover": mm.cover_image.as_ref().and_then(|c| c.large.clone()),
-                })))
-                .collect::<Vec<_>>())
-        })
-        .unwrap_or(Value::Null);
-
-    serde_json::json!({
-        "studios": studios_json,
-        "relations": relations_json,
-        "external_links": external_links_json,
-        "streaming_episodes": streaming_json,
-        "recommendations": recs_json,
+fn parse_page(value: Value) -> Result<Fetched, String> {
+    let resp: Response = serde_json::from_value(value).map_err(|e| format!("anilist: {}", e))?;
+    if let Some(err) = resp.errors.first() {
+        return Err(format!("anilist graphql: {}", err.message));
+    }
+    let data = resp.data.ok_or_else(|| "anilist: пустой ответ".to_string())?;
+    Ok(Fetched {
+        has_next: data.page.page_info.has_next_page,
+        media: data.page.media,
     })
 }
+

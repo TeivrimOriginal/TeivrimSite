@@ -1,14 +1,29 @@
+# Cargo registry mirror.
+#
+# crates.io is unreachable from this network (TLS resets), so downloads go
+# through a mirror. USTC is the default because it is both reachable and the
+# one this machine already has a warm cache for.
+#
+# If a build fails with "failed to download", swap in the commented alternative
+# below — the crate cache is per-mirror, so switching mirrors means re-fetching.
+
 [source.crates-io]
-replace-with = "rsproxy"
+replace-with = "ustc"
 
-[source.rsproxy]
-registry = "sparse+https://rsproxy.cn/index/"
+[source.ustc]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
 
-[registries.rsproxy]
-index = "sparse+https://rsproxy.cn/index/"
+# Alternatives, in the order worth trying:
+#   sparse+https://rsproxy.cn/index/
+#   sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/
+#   sparse+https://index.crates.io/
 
 [net]
 git-fetch-with-cli = true
+retry = 5
 
 [http]
-check-revoke = false
+timeout = 120
+multiplexing = true
+# rsproxy/USTC occasionally pause mid-transfer; do not treat that as fatal.
+low-speed-limit = 1

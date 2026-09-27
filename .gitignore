@@ -1,25 +1,42 @@
-# Игнорировать конкретные папки
-ARCHIVE_FOR_ADDITIONAL/
-x86_64/
-target/
-becap/
-# Полезно также добавить временные файлы и скомпилированный мусор (если есть):
-*.exe
-*.dll
-*.o
+# Build output
+/target/
+**/*.rs.bk
+
+# Runtime data. The catalogue is a rebuildable cache of public APIs, so it is
+# never committed; the legacy v1 database names are listed too so an existing
+# checkout does not start tracking one by accident.
+data/
 *.db
-*.db-*
-*.pdb
-*.obj
-*.a
-*.lib
-*.zip
-*.7z
-*.rar
-build/
-bin/AnimeData.db 
-AnimeData.db-shm 
-AnimeData.db-wal 
-"������ �����.db" 
-"������ ����� 2.db" 
-target/ 
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.legacy-*
+
+# Local secrets
+.env
+.env.local
+*.keystore
+*.jks
+keystore.properties
+
+# Mobile build artefacts
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+*.aab.idx
+
+# Android signing material must never be committed
+android/keystores/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

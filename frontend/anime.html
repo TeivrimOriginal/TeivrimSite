@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Аниме</title>
+<meta name="description" content="Подробная информация об аниме: описание, жанры, студии, персонажи, озвучка, связанные работы.">
+<meta name="theme-color" content="#0d0d10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f6f9" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="dark light">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<meta property="og:type" content="video.tv_show">
+<meta property="og:title" content="Аниме">
+<meta property="og:description" content="Подробная информация об аниме.">
+<meta property="og:image" content="/static/icon-512.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="appbar">
+    <div class="appbar__inner">
+        <a class="icon-btn" href="/" data-i18n-title="back" title="Назад" aria-label="Назад">&#8592;</a>
+        <span class="brand" id="head-title"></span>
+        <span class="appbar__spacer"></span>
+        <button class="icon-btn" id="btn-theme" type="button" data-i18n-title="theme" title="Тема" aria-label="Переключить тему">&#9680;</button>
+        <a class="avatar" id="btn-account" href="/" data-i18n-title="account" title="Аккаунт" aria-label="Аккаунт">?</a>
+    </div>
+</header>
+
+<div class="detail__banner" id="banner"></div>
+
+<main class="detail__inner" id="root">
+    <div class="state" style="padding-top:180px" data-i18n="loading">Загрузка…</div>
+</main>
+
+<script src="/static/app.js"></script>
+<script src="/static/detail.js" defer></script>
+</body>
+</html>
