@@ -24,6 +24,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// One import stage: a name for the log, and how to start it.
+///
+/// The future is boxed so every stage has the same type and the ordered run
+/// below is a plain `for` loop instead of three hand-written awaits.
+type Stage = (
+    &'static str,
+    fn(Ctx) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>,
+);
+
 /// Set to true to ask a running sync to stop after the current page.
 pub static ABORT: AtomicBool = AtomicBool::new(false);
 
@@ -80,7 +89,11 @@ pub async fn run_all(ctx: Ctx) {
     // The order is a dependency chain, not a preference: AniList defines the
     // row set, Kitsu attaches ratings and external ids through `mappings`, and
     // Shikimori attaches Russian titles by name.
-    let stages: [(&str, fn(Ctx) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>); 3] = [
+    //
+    // The boxed future is what lets the three sit in one array: each stage is an
+    // `async fn`, and awaiting them through a uniform type is what turns "run
+    // these in order" into a loop.
+    let stages: [Stage; 3] = [
         ("anilist", |c| Box::pin(anilist::run(c))),
         ("kitsu", |c| Box::pin(kitsu::run(c))),
         ("shikimori", |c| Box::pin(shikimori::run(c))),

@@ -95,12 +95,18 @@ pub fn load_detail(
         // name the sources know about lives in `alt_titles`.
         synonyms: {
             let mut v: Vec<String> = parse_string_array(&row.8);
-            for extra in [row.4.as_deref(), row.5.as_deref(), row.6.as_deref(), row.7.as_deref()] {
-                if let Some(s) = extra {
-                    let t = s.trim();
-                    if !t.is_empty() && !v.iter().any(|x| x == t) {
-                        v.push(t.to_string());
-                    }
+            for extra in [
+                row.4.as_deref(),
+                row.5.as_deref(),
+                row.6.as_deref(),
+                row.7.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let t = extra.trim();
+                if !t.is_empty() && !v.iter().any(|x| x == t) {
+                    v.push(t.to_string());
                 }
             }
             v

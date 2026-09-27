@@ -1,0 +1,28 @@
+*.txt text=auto eol=lf
+*.md text=auto eol=lf
+*.rs text=auto eol=lf
+*.toml text=auto eol=lf
+*.yml text=auto eol=lf
+*.json text=auto eol=lf
+*.html text=auto eol=lf
+*.css text=auto eol=lf
+*.js text=auto eol=lf
+*.svg text=auto eol=lf
+*.xml text=auto eol=lf
+*.kt text=auto eol=lf
+*.kts text=auto eol=lf
+*.ps1 text=auto eol=lf
+Dockerfile text=auto eol=lf
+.gitattributes text=auto eol=lf
+.gitignore text=auto eol=lf
+
+# Keep binaries out of text handling entirely.
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.db binary
+*.apk binary
+*.aab binary
+*.keystore binary
+*.jks binary

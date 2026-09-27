@@ -1,13 +1,23 @@
 # Generates the PWA / Android launcher icons from the same design as
-# frontend/static/icon.svg. Run:  pwsh -File tools\make-icons.ps1
+# frontend/static/icon.svg.
+#
+#   powershell -File tools\make-icons.ps1
 param(
-    [string]$OutDir = "frontend\static"
+    [string]$OutDir = "frontend\static",
+    # Legacy launcher icons for API 24-25, which predate <adaptive-icon>. Without
+    # these the app has no icon at all on those versions.
+    [string]$AndroidDir = "android\app\src\main\res"
 )
 
 Add-Type -AssemblyName System.Drawing
 
 function New-Icon {
-    param([int]$Size, [string]$OutFile, [bool]$Maskable)
+    param(
+        [int]$Size,
+        [string]$OutFile,
+        [bool]$Maskable,
+        [bool]$Round = $false
+    )
 
     $bmp = New-Object System.Drawing.Bitmap($Size, $Size)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -16,7 +26,8 @@ function New-Icon {
     $g.Clear([System.Drawing.Color]::Transparent)
 
     # A maskable icon is cropped to a circle by the launcher, so the artwork
-    # is inset and the corner radius is halved.
+    # is inset and the corner radius is halved. The legacy round variant is a
+    # circle the launcher does not crop, so it fills the whole square.
     $pad = if ($Maskable) { [int]($Size * 0.16) } else { 0 }
     $radius = if ($Maskable) { [int]($Size * 0.28) } else { [int]($Size * 0.22) }
 
@@ -30,12 +41,16 @@ function New-Icon {
         [System.Drawing.Color]::FromArgb(255, 138, 61))
 
     $shape = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $d = $radius * 2
-    $shape.AddArc($rect.X, $rect.Y, $d, $d, 180, 90)
-    $shape.AddArc($rect.Right - $d, $rect.Y, $d, $d, 270, 90)
-    $shape.AddArc($rect.Right - $d, $rect.Bottom - $d, $d, $d, 0, 90)
-    $shape.AddArc($rect.X, $rect.Bottom - $d, $d, $d, 90, 90)
-    $shape.CloseFigure()
+    if ($Round) {
+        $shape.AddEllipse($rect)
+    } else {
+        $d = $radius * 2
+        $shape.AddArc($rect.X, $rect.Y, $d, $d, 180, 90)
+        $shape.AddArc($rect.Right - $d, $rect.Y, $d, $d, 270, 90)
+        $shape.AddArc($rect.Right - $d, $rect.Bottom - $d, $d, $d, 0, 90)
+        $shape.AddArc($rect.X, $rect.Bottom - $d, $d, $d, 90, 90)
+        $shape.CloseFigure()
+    }
     $g.FillPath($brush, $shape)
 
     # Three strokes, matching the SVG mark: crossbar, stem, lower arc.
@@ -59,6 +74,9 @@ function New-Icon {
         ($cx - $arcWidth / 2), ($bottom - ($arcHeight / 2)), $arcWidth, $arcHeight)
     $g.DrawArc($pen, $arcRect, 0, 180)
 
+    $dir = Split-Path -Parent $OutFile
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+
     $bmp.Save($OutFile, [System.Drawing.Imaging.ImageFormat]::Png)
 
     $g.Dispose()
@@ -74,3 +92,18 @@ New-Icon -Size 192  -OutFile (Join-Path $OutDir "icon-192.png")         -Maskabl
 New-Icon -Size 512  -OutFile (Join-Path $OutDir "icon-512.png")         -Maskable $false
 New-Icon -Size 1024 -OutFile (Join-Path $OutDir "icon-1024.png")        -Maskable $false
 New-Icon -Size 512  -OutFile (Join-Path $OutDir "icon-maskable-512.png") -Maskable $true
+
+# Legacy launcher icons. minSdk is 24 and <adaptive-icon> arrived in 26, so these
+# are the icons on API 24 and 25 rather than a belt-and-braces extra.
+$densities = [ordered]@{
+    "mdpi" = 48
+    "hdpi" = 72
+    "xhdpi" = 96
+    "xxhdpi" = 144
+    "xxxhdpi" = 192
+}
+foreach ($entry in $densities.GetEnumerator()) {
+    $dir = Join-Path $AndroidDir "mipmap-$($entry.Key)"
+    New-Icon -Size $entry.Value -OutFile (Join-Path $dir "ic_launcher.png")      -Maskable $false
+    New-Icon -Size $entry.Value -OutFile (Join-Path $dir "ic_launcher_round.png") -Maskable $false -Round $true
+}

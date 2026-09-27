@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The bearer token is the only thing worth protecting: it is a live session
+  credential. Everything else in the app is a rebuildable cache of public
+  catalogue data.
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="." />
+    <exclude domain="sharedpref" path="anime_token.xml" />
+</full-backup-content>

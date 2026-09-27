@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+      Version checks are off, deliberately and for a documented reason.
+
+      AGP 8.13 + compileSdk 36 is the ceiling this project can reach: AGP 9
+      registers its own `kotlin` extension and fails when the Kotlin Android
+      plugin is applied on top, and every AndroidX release newer than the pinned
+      ones requires compileSdk 37 with AGP 9.1. "Update everything" would move
+      the build to a platform it cannot use. See android/README.md.
+
+      They are re-enabled one at a time when the constraint moves, so the
+      relevant check still does its job.
+    -->
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <issue id="OldTargetApi" severity="ignore" />
+</lint>

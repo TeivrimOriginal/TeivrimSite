@@ -13,6 +13,10 @@ use actix_web::{web, HttpRequest, HttpResponse, ResponseError};
 /// The client address has to be resolved before `web::block` because
 /// `ServiceRequest` is `!Send`; the limiter itself is only touched by its own
 /// short-lived `check`.
+// `HttpResponse` is a fat type, so this `Result` has a large `Err` variant. It is
+// boxed nowhere on purpose: the success path stays a `()`, and the error path
+// already builds a response, so an extra allocation would buy nothing.
+#[allow(clippy::result_large_err)]
 async fn limited(
     limiter: &Limiter,
     req: &HttpRequest,

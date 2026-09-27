@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Shown before Compose draws its first frame. values-night/ overrides it, so
+      a light-mode device never gets a dark flash and a dark-mode device never
+      gets a white one.
+
+      The brand colours live in Theme.kt as Compose Color values rather than as
+      resources, because nothing outside the theme needs them and a resource
+      would only be unpacked at runtime to be unused.
+    -->
+    <color name="window_background">#F6F6F9</color>
+</resources>

@@ -5,7 +5,11 @@
 # Runtime data. The catalogue is a rebuildable cache of public APIs, so it is
 # never committed; the legacy v1 database names are listed too so an existing
 # checkout does not start tracking one by accident.
-data/
+#
+# Leading slash on purpose: a bare `data/` matches every directory with that
+# name at any depth, which silently excluded the Android app's
+# `ru/teivrim/anime/data/` package - the whole data layer - from the repository.
+/data/
 *.db
 *.db-wal
 *.db-shm
@@ -30,8 +34,11 @@ android/.idea/
 *.aab
 *.aab.idx
 
-# Android signing material must never be committed
-android/keystores/
+# Android signing material must never be committed. The .example file is the
+# only thing in there that belongs in the repository: it documents the keys
+# without carrying any of them.
+android/keystores/*
+!android/keystores/keystore.properties.example
 
 # Editors / OS
 .vscode/

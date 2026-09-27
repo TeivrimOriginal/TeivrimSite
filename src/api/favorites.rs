@@ -15,10 +15,29 @@ pub struct UpsertBody {
     pub uid: String,
     pub status: Option<String>,
     pub is_favorite: Option<bool>,
-    /// 1..10, or null to clear.
+    /// 1..10. `None` = leave alone, `Some(None)` = clear.
+    #[serde(default, deserialize_with = "double_option")]
     pub score: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub progress: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub notes: Option<Option<String>>,
+}
+
+/// Tells "field absent" from "field is null".
+///
+/// A plain `Option<Option<T>>` collapses both to `None`, which makes it
+/// impossible for a client to clear a score it has already set. The trick is
+/// that `#[serde(default)]` handles the absent case before this function is
+/// ever called, so here `T` is really an `Option<Inner>`: deserializing the
+/// present value yields `None` for a JSON `null` and `Some(x)` otherwise, and
+/// re-wrapping in `Some` restores the distinction.
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

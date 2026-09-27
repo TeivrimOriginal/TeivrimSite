@@ -32,7 +32,7 @@ async fn main() -> std::io::Result<()> {
 
     log_info("=== Anime DB 2.0 ===");
 
-    let db = match db::Db::new(&cfg.db_path, cfg.pool_size) {
+    let db = match db::Db::open(&cfg.db_path, cfg.pool_size) {
         Ok(db) => db,
         Err(e) => {
             log_error(&format!("[db] {}", e));

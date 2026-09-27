@@ -112,7 +112,7 @@ pub async fn start(
     admin_token: web::Data<Option<String>>,
     ctx: Option<web::Data<Arc<crate::loader::Ctx>>>,
 ) -> HttpResponse {
-    if !authorized(&req, admin_token.as_deref().as_deref()) {
+    if !authorized(&req, admin_token.as_deref()) {
         return ApiError::Forbidden("Для запуска синхронизации нужен X-Admin-Token".into()).error_response();
     }
     if RUNNING.swap(true, Ordering::SeqCst) {
@@ -131,7 +131,7 @@ pub async fn start(
 }
 
 pub async fn abort(req: HttpRequest, admin_token: web::Data<Option<String>>) -> HttpResponse {
-    if !authorized(&req, admin_token.as_deref().as_deref()) {
+    if !authorized(&req, admin_token.as_deref()) {
         return ApiError::Forbidden("Для остановки синхронизации нужен X-Admin-Token".into()).error_response();
     }
     crate::loader::request_abort();

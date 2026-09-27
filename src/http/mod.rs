@@ -141,14 +141,19 @@ where
 }
 
 /// A short id from the OS CSPRNG, for correlating log lines only.
+///
+/// The fallback is there so a request still gets an id if the CSPRNG is
+/// unavailable, which is why the buffer is sized to what the fallback actually
+/// produces: `subsec_nanos` is a `u32`, so its byte array is four bytes long and
+/// slicing six out of it would panic on the request path.
 fn request_id() -> String {
-    let mut buf = [0u8; 6];
+    let mut buf = [0u8; 4];
     if getrandom::getrandom(&mut buf).is_err() {
-        let n = std::time::SystemTime::now()
+        buf = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        buf = n.to_le_bytes()[..6].try_into().unwrap_or([0; 6]);
+            .unwrap_or(0)
+            .to_le_bytes();
     }
     hex::encode(buf)
 }

@@ -187,7 +187,7 @@ fn client() -> ApiResult<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(D::from_secs(12))
         .connect_timeout(D::from_secs(5))
-        .user_agent(concat!("anime-db/2.0 (+https://github.com/TeivrimOriginal/TeivrimSite)"))
+        .user_agent("anime-db/2.0 (+https://github.com/TeivrimOriginal/TeivrimSite)")
         .build()
         .map_err(|e| {
             log_warn(&format!("[img] не удалось создать клиент: {}", e));

@@ -33,7 +33,7 @@ impl Upstream {
         extra_headers: Vec<(String, String)>,
     ) -> reqwest::Result<Upstream> {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("anime-db/2.0 (+https://github.com/TeivrimOriginal/TeivrimSite)"))
+            .user_agent("anime-db/2.0 (+https://github.com/TeivrimOriginal/TeivrimSite)")
             .timeout(base_timeout)
             .connect_timeout(Duration::from_secs(15))
             .pool_max_idle_per_host(4)

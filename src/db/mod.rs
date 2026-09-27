@@ -45,7 +45,12 @@ impl Handle {
 }
 
 impl Db {
-    pub fn new(db_path: &Path, pool_size: u32) -> Result<Handle, String> {
+    /// Opens the database, applies the schema, and returns the shared handle.
+    ///
+    /// Named `open` rather than `new` because the result is a `Handle` wrapping
+    /// an `Arc`, not the `Db` itself: what the rest of the program holds is the
+    /// cheap, shareable thing.
+    pub fn open(db_path: &Path, pool_size: u32) -> Result<Handle, String> {
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)

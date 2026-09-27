@@ -250,9 +250,9 @@ pub fn build_where(
     if let (Some(uid_user), Some(list)) = (user_id, q.in_list.as_deref()) {
         match list {
             "favorites" | "favourites" => {
-                w.raw(&format!(
+                w.raw(
                     "a.uid IN (SELECT uid FROM favorites WHERE user_id = ? AND is_favorite = 1)",
-                ));
+                );
                 w.params.push(SqlValue::Integer(uid_user));
             }
             "all" => {
@@ -277,7 +277,7 @@ pub const VALID_STATUSES: &[&str] = &["watching", "planned", "completed", "dropp
 
 fn slug_list(raw: &str) -> Vec<String> {
     raw.split(',')
-        .map(|s| crate::loader::title_key(s))
+        .map(crate::loader::title_key)
         .filter(|s| !s.is_empty())
         .collect()
 }

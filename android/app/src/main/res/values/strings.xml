@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      English is the default locale, Russian is the translation in values-ru/.
+      Putting the default in values/ rather than treating the app as Russian
+      keeps lint's MissingTranslation check meaningful instead of reporting the
+      default folder as untranslated.
+
+      Only the strings that must exist at build time live here: the launcher
+      label and anything referenced from the manifest. Everything the UI shows is
+      resolved in code from the locale-aware table in Strings.kt, so a missing
+      translation degrades to the base language instead of crashing or showing a
+      raw key.
+    -->
+    <string name="app_name">Anime Catalog</string>
+</resources>
