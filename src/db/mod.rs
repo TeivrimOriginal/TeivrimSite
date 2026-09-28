@@ -810,4 +810,117 @@ mod tests {
         );
         assert!(second.is_err(), "anilist_id is UNIQUE by design");
     }
+
+    // ------------------------------------------------- legacy schema swap
+
+    /// The v1 shape: an `anime` table keyed on a signed integer, no `uid`.
+    fn write_legacy_db(path: &Path) {
+        let c = Connection::open(path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE anime (
+                anilist_id INTEGER PRIMARY KEY,
+                title      TEXT,
+                is_adult   INTEGER
+             );
+             INSERT INTO anime (anilist_id, title) VALUES (1, 'Cowboy Bebop'), (-2, 'Kitsu only');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_v1_database_is_moved_aside_instead_of_migrated() {
+        // The old data is a cache of public APIs and is cheap to rebuild, so it
+        // is renamed rather than converted; the process then starts on an empty
+        // v2 file instead of guessing at a conversion.
+        let dir = std::env::temp_dir();
+        let prefix = format!("anime-legacy-{}-", std::process::id());
+        // Drop anything a previous run of this test left behind, so the
+        // assertion below counts only what this run produced.
+        for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with(&prefix) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+
+        let path = dir.join(format!("{}x.db", prefix));
+        write_legacy_db(&path);
+
+        handle_legacy_db(&path);
+
+        assert!(!path.exists(), "старый файл должен быть убран с места");
+        let moved: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with(&prefix) && n.contains(".legacy-"))
+            .collect();
+        assert_eq!(moved.len(), 1, "перенесённый файл: {:?}", moved);
+        // The content survives, which is the point of moving rather than
+        // dropping: a human can still look at it.
+        let c = Connection::open(dir.join(&moved[0])).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        drop(c);
+
+        let _ = std::fs::remove_file(dir.join(&moved[0]));
+    }
+
+    #[test]
+    fn a_v2_database_is_left_exactly_where_it_is() {
+        // This is the one that would be catastrophic to get wrong: the routine
+        // runs before every boot on the live file. The file is made by the
+        // production path (`Db::open`), so the test cannot drift from the real
+        // schema — a hand-written copy would prove nothing about it.
+        let path = std::env::temp_dir().join(format!("anime-v2-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let handle = Db::open(&path, 1).expect("Db::open creates a v2 file");
+        handle
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO anime (uid, anilist_id, title_romaji, created_at) VALUES ('al:1', 1, 'X', 1)",
+                    [],
+                )
+            })
+            .unwrap();
+        drop(handle);
+
+        handle_legacy_db(&path);
+
+        assert!(path.exists(), "файл v2 обязан остаться на месте");
+        let leftovers: Vec<String> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("anime-v2-") && n.contains(".legacy-"))
+            .collect();
+        assert!(leftovers.is_empty(), "файл v2 не должны трогать: {:?}", leftovers);
+
+        let c = Connection::open(&path).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "данные на месте");
+        drop(c);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
+    fn a_missing_file_is_not_an_error() {
+        // Called before the file exists on a first boot.
+        handle_legacy_db(Path::new("data/definitely-not-here.db"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_database_is_not_moved() {
+        // A truncated or foreign file has no `anime` table, so it is left for
+        // `apply_schema` to deal with; renaming it would hide a real problem.
+        let path = std::env::temp_dir().join(format!("anime-junk-{}.db", std::process::id()));
+        std::fs::write(&path, b"not a database at all").unwrap();
+        handle_legacy_db(&path);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
+    }
 }

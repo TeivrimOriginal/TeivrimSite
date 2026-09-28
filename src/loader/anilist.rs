@@ -35,30 +35,34 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
 
         let mut saved: i64 = 0;
         let mut page = start_page;
-        let mut consecutive_errors = 0u32;
+        let mut failures = super::Failures::new();
         let mut last_reported = Instant::now();
 
         while page <= MAX_PAGES {
             let (media, has_next) = match anilist::fetch_page(&ctx.sources.anilist, page, per_page, sort).await {
                 Ok(f) => (f.media, f.has_next),
                 Err(e) => {
-                    consecutive_errors += 1;
                     // The upstream client already retried with backoff, so a
                     // failure here means the source really is unavailable.
                     log_error(&format!("[anilist][{}] стр. {}: {}", sort, page, e));
                     let _ = with_conn(&ctx, |c| { db::mark_error(c, SOURCE, &task, &e); Ok(()) });
-                    if consecutive_errors >= 3 {
-                        log_error(&format!(
-                            "[anilist][{}] три ошибки подряд, перехожу к следующей сортировке",
-                            sort
-                        ));
-                        break;
+                    match failures.record() {
+                        super::OnError::NextPage => {
+                            page += 1;
+                            continue;
+                        }
+                        super::OnError::NextSort => {
+                            log_error(&format!(
+                                "[anilist][{}] {} ошибок подряд, перехожу к следующей сортировке",
+                                sort,
+                                failures.streak()
+                            ));
+                            break;
+                        }
                     }
-                    page += 1;
-                    continue;
                 }
             };
-            consecutive_errors = 0;
+            failures.reset();
 
             if media.is_empty() {
                 with_conn(&ctx, |c| db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, true))?;

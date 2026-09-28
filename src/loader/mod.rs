@@ -48,6 +48,56 @@ fn aborted() -> bool {
     ABORT.load(Ordering::Relaxed)
 }
 
+/// How many pages may fail in a row before the loader gives up on this sort.
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// What to do after a page failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnError {
+    /// Ask for the next page.
+    NextPage,
+    /// Stop this sort and move on: the source is unavailable.
+    NextSort,
+}
+
+/// Counter of consecutive failures.
+///
+/// Three in a row ends the sort. Without it a source that answers HTTP 500 to
+/// everything turns one sort into `MAX_PAGES` identical retries and a log of
+/// thousands of the same line; with it the loader moves to the next sort while
+/// the catalogue is still half-built.
+///
+/// It is a type of its own rather than a bare `u32` in three loaders: the
+/// decision is identical in all of them, so it is written and tested once.
+pub struct Failures {
+    streak: u32,
+}
+
+impl Failures {
+    pub fn new() -> Failures {
+        Failures { streak: 0 }
+    }
+
+    /// A page came back: the run is healthy again.
+    pub fn reset(&mut self) {
+        self.streak = 0;
+    }
+
+    pub fn streak(&self) -> u32 {
+        self.streak
+    }
+
+    /// A page failed. Returns what the loop should do next.
+    pub fn record(&mut self) -> OnError {
+        self.streak += 1;
+        if self.streak >= MAX_CONSECUTIVE_FAILURES {
+            OnError::NextSort
+        } else {
+            OnError::NextPage
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Ctx {
     pub db: Handle,
@@ -514,5 +564,59 @@ mod tests {
         assert_eq!(human_secs(3599), "59 мин 59 с");
         assert_eq!(human_secs(3600), "1 ч 0 мин");
         assert_eq!(human_secs(7384), "2 ч 3 мин");
+    }
+
+    // --------------------------------------------------------- Failures
+
+    #[test]
+    fn two_failures_in_a_row_still_ask_for_the_next_page() {
+        let mut f = Failures::new();
+        assert_eq!(f.record(), OnError::NextPage);
+        assert_eq!(f.record(), OnError::NextPage);
+        assert_eq!(f.streak(), 2);
+    }
+
+    #[test]
+    fn the_third_failure_in_a_row_ends_the_sort() {
+        // A source answering 500 to everything must not cost MAX_PAGES
+        // retries and a log full of identical lines.
+        let mut f = Failures::new();
+        f.record();
+        f.record();
+        assert_eq!(f.record(), OnError::NextSort);
+        assert_eq!(f.streak(), MAX_CONSECUTIVE_FAILURES);
+    }
+
+    #[test]
+    fn a_successful_page_resets_the_run() {
+        // Otherwise a long import interleaves one bad page with good ones and
+        // abandons every sort after the third blip.
+        let mut f = Failures::new();
+        f.record();
+        f.record();
+        f.reset();
+        assert_eq!(f.streak(), 0);
+        assert_eq!(f.record(), OnError::NextPage);
+        assert_eq!(f.record(), OnError::NextPage);
+        assert_eq!(f.record(), OnError::NextSort);
+    }
+
+    #[test]
+    fn every_stay_gives_up_at_the_same_threshold() {
+        // The three loaders share one counter, so the behaviour is identical in
+        // all of them by construction rather than by three copies of an `if`.
+        for length in 1..=MAX_CONSECUTIVE_FAILURES {
+            let mut f = Failures::new();
+            let mut last = OnError::NextPage;
+            for _ in 0..length {
+                last = f.record();
+            }
+            let want = if length >= MAX_CONSECUTIVE_FAILURES {
+                OnError::NextSort
+            } else {
+                OnError::NextPage
+            };
+            assert_eq!(last, want, "подряд сбоев: {}", length);
+        }
     }
 }

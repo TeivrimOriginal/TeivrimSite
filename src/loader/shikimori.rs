@@ -38,25 +38,32 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
         let mut saved = 0i64;
         let mut merged = 0i64;
         let mut page = (cp.last_page + 1).max(1) as u32;
-        let mut errors = 0u32;
+        let mut failures = super::Failures::new();
         let mut last_reported = Instant::now();
 
         while page <= MAX_PAGES {
             let fetched = match shikimori::fetch_page(&ctx.sources.shikimori, page, per_page, order).await {
                 Ok(f) => f,
                 Err(e) => {
-                    errors += 1;
                     log_error(&format!("[shikimori][{}] стр. {}: {}", order, page, e));
                     let _ = with_conn(&ctx, |c| { db::mark_error(c, SOURCE, &task, &e); Ok(()) });
-                    if errors >= 3 {
-                        log_error(&format!("[shikimori][{}] три ошибки подряд, следующий порядок", order));
-                        break;
+                    match failures.record() {
+                        super::OnError::NextPage => {
+                            page += 1;
+                            continue;
+                        }
+                        super::OnError::NextSort => {
+                            log_error(&format!(
+                                "[shikimori][{}] {} ошибок подряд, следующий порядок",
+                                order,
+                                failures.streak()
+                            ));
+                            break;
+                        }
                     }
-                    page += 1;
-                    continue;
                 }
             };
-            errors = 0;
+            failures.reset();
 
             if fetched.items.is_empty() {
                 with_conn(&ctx, |c| db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, true))?;

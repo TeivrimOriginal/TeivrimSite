@@ -39,7 +39,7 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
         }
 
         let mut page = (cp.last_page + 1).max(1) as u32;
-        let mut errors = 0u32;
+        let mut failures = super::Failures::new();
         let mut last_reported = Instant::now();
         let mut total: u64;
         let mut saved = 0i64;
@@ -49,18 +49,25 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
                 match kitsu::fetch_page(&ctx.sources.kitsu, page, per_page, sort).await {
                     Ok(v) => v,
                     Err(e) => {
-                        errors += 1;
                         log_error(&format!("[kitsu][{}] стр. {}: {}", sort, page, e));
                         let _ = with_conn(&ctx, |c| { db::mark_error(c, SOURCE, &task, &e); Ok(()) });
-                        if errors >= 3 {
-                            log_error(&format!("[kitsu][{}] три ошибки подряд, следующая сортировка", sort));
-                            break;
+                        match failures.record() {
+                            super::OnError::NextPage => {
+                                page += 1;
+                                continue;
+                            }
+                            super::OnError::NextSort => {
+                                log_error(&format!(
+                                    "[kitsu][{}] {} ошибок подряд, следующая сортировка",
+                                    sort,
+                                    failures.streak()
+                                ));
+                                break;
+                            }
                         }
-                        page += 1;
-                        continue;
                     }
                 };
-            errors = 0;
+            failures.reset();
             total = meta_total;
 
             if res.data.is_empty() {
