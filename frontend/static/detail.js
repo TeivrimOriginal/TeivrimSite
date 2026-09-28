@@ -10,7 +10,9 @@
     const root = $('#root');
     const uid = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
 
-    const STATUS_OPTIONS = ['watching', 'planned', 'completed', 'dropped'];
+    // Built from the shared table so this list cannot fall behind the statuses
+    // the API accepts; see the note on `STATUS_LABELS` in app.js.
+    const STATUS_OPTIONS = Object.keys(App.statusLabels);
 
     let data = null;
 
@@ -365,6 +367,14 @@
             statusSel.appendChild(el('option', { value: s, text: statusLabel(s) }));
         });
         statusSel.value = current.status;
+        // A status the table has no entry for would leave the select on its
+        // first option while the panel claims to show what is stored, and the
+        // next save would silently change the status. Show the stored value
+        // verbatim instead.
+        if (!statusSel.value) {
+            statusSel.appendChild(el('option', { value: current.status, text: current.status }));
+            statusSel.value = current.status;
+        }
 
         const scoreInput = el('input', {
             type: 'number', min: '1', max: '10', inputmode: 'numeric',

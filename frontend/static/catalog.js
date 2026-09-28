@@ -67,6 +67,10 @@
             if (v !== null && v !== '') next[k] = v;
         });
         if (!SORTS.some((s) => s[0] === next.sort)) next.sort = 'popularity';
+        // A hand-edited or stale link can carry any `in_list` at all. The
+        // list endpoint filters on a status it knows, so an unknown bucket would
+        // silently show the whole watchlist while the URL claims otherwise.
+        if (next.in_list && !App.isListBucket(next.in_list)) next.in_list = '';
         state = next;
         listMode = next.in_list !== '';
     }
@@ -228,7 +232,13 @@
 
     async function loadList(pageNo) {
         const q = { limit: 48, offset: (pageNo - 1) * 48 };
-        if (state.in_list) q.status = state.in_list === 'favorites' ? '' : state.in_list;
+        // `favorites` is a separate flag on the endpoint, not a status, and
+        // `all` means no status filter at all — which is a different thing from
+        // filtering on a status named "". Anything else is a status the API
+        // accepts; `readUrl` has already rejected a bucket that is not one.
+        if (state.in_list && state.in_list !== 'favorites' && state.in_list !== 'all') {
+            q.status = state.in_list;
+        }
         if (state.in_list === 'favorites') q.favorites = '1';
         return Api.get('/api/favorites', q);
     }
@@ -353,9 +363,22 @@
         bar.appendChild(openBtn);
 
         if (listMode) {
-            const chip = el('button', { class: 'chip is-active', type: 'button', text: I18n.t('my_list') });
-            chip.addEventListener('click', () => { state.in_list = ''; listMode = false; apply(); });
-            bar.appendChild(chip);
+            // One chip per bucket the API can filter by, so a `paused` row is
+            // reachable instead of only appearing under "all". The buckets are
+            // the statuses plus the star, which is what `/api/favorites` and
+            // `/api/anime?in_list=` both understand.
+            const buckets = [['all', I18n.t('my_list')], ['favorites', I18n.t('list_favorites')]]
+                .concat(Object.keys(App.statusLabels).map((s) => [s, App.statusLabel(s)]));
+            for (const [value, label] of buckets) {
+                if (state.in_list === value) continue;
+                const b = el('button', { class: 'chip', type: 'button', text: label });
+                b.addEventListener('click', () => {
+                    state.in_list = value;
+                    listMode = !!value;
+                    apply();
+                });
+                bar.appendChild(b);
+            }
         }
 
         SORTS.forEach(([value, key]) => {

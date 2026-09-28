@@ -540,11 +540,22 @@
         };
     }
 
+    /**
+     * Watchlist statuses, and the only place they are written down.
+     *
+     * `paused` is accepted by the API and was missing here, so a row saved as
+     * paused counted towards `/api/favorites/counts` and towards the "all"
+     * filter while no screen could show it or let anybody set it. `detail.js`
+     * builds its status dropdown from `Object.keys(STATUS_LABELS)`, so adding a
+     * key is all it takes on this side, and the matching test in
+     * `src/guard.rs` fails if the two lists ever drift apart again.
+     */
     const STATUS_LABELS = {
         watching: { ru: 'Смотрю', en: 'Watching' },
         planned: { ru: 'Запланировано', en: 'Planned' },
         completed: { ru: 'Просмотрено', en: 'Completed' },
         dropped: { ru: 'Брошено', en: 'Dropped' },
+        paused: { ru: 'Пауза', en: 'Paused' },
     };
 
     function statusLabel(status) {
@@ -570,5 +581,21 @@
         I18n, Theme, Api, ApiError, Session,
         $, $$, esc, el, add, toast, attachCover, debounce, coverUrl, clean,
         statusLabel, seasonLabel, formatDate,
+        // Exposed so the watchlist dropdown is built from this table rather than
+        // from a second copy of the same list.
+        statusLabels: STATUS_LABELS,
+
+        /**
+         * Whether a watchlist bucket is one the API can filter by.
+         *
+         * `all` is the empty string: no status filter at all, which is a
+         * different thing from filtering on a status named "". Read from a URL
+         * this is the guard against a link that asks for a bucket that does not
+         * exist and quietly gets the whole list instead.
+         */
+        isListBucket(value) {
+            return value === '' || value === 'all' || value === 'favorites'
+                || Object.prototype.hasOwnProperty.call(STATUS_LABELS, value);
+        },
     };
 })(window);

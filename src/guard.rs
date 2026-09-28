@@ -214,3 +214,237 @@ mod tests {
         );
     }
 }
+
+/// The frontend is plain JS with no build step and no type checker, so the two
+/// contracts it depends on — the i18n tables and the API field names — are
+/// checked from here rather than in a browser.
+mod frontend {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    /// Reads a file out of `frontend/`. The JS lives under `frontend/static/`
+    /// while the two shells sit at the root, so the prefix is the caller's
+    /// business rather than a guess made here.
+    fn read(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend").join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("не прочитан {}: {}", path.display(), e))
+    }
+
+    fn read_static(name: &str) -> String {
+        read(&format!("static/{}", name))
+    }
+
+    /// Splits one `STRINGS` table out of `app.js`.
+    ///
+    /// The tables are the only nested block indented by twelve spaces in that
+    /// file, which is what makes a textual split safe here. A change to the
+    /// formatting of the file breaks this loudly rather than silently
+    /// emptying the key list, because a missing `ru` table is an error.
+    fn strings_table(source: &str, lang: &str) -> BTreeSet<String> {
+        let open = format!("        {}: {{", lang);
+        let start = source
+            .find(&open)
+            .unwrap_or_else(|| panic!("в app.js нет таблицы {}", lang))
+            + open.len();
+        let rest = &source[start..];
+        // The table ends at the closing brace of the `STRINGS` object, which is
+        // the only line indented by four spaces and holding `};`.
+        let end = rest
+            .find("\n    };")
+            .unwrap_or_else(|| panic!("таблица {} не закрыта", lang));
+        // Everything after the last key is the *next* language's opening line,
+        // so the slice stops there.
+        let body = match rest[..end].find("\n        en: {") {
+            Some(cut) if lang == "ru" => &rest[..cut],
+            _ => &rest[..end],
+        };
+        body.lines()
+            .filter_map(|l| {
+                // `key: 'value',` on one line. The key is an identifier, so
+                // splitting on the first colon cannot run into a colon inside
+                // the value, and a line without one is a comment.
+                let key = l.trim().split(':').next()?.trim();
+                let is_key = !key.is_empty()
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && l.trim_start().starts_with(key);
+                is_key.then(|| key.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_two_languages_define_exactly_the_same_keys() {
+        // A key that exists in one language and not the other renders as the
+        // raw key for half the visitors, and nothing in a browser reports it:
+        // `I18n.t` falls back to Russian, then to the key itself.
+        let app = read_static("app.js");
+        let ru = strings_table(&app, "ru");
+        let en = strings_table(&app, "en");
+        assert!(!ru.is_empty() && !en.is_empty(), "таблицы пусты: ru={} en={}", ru.len(), en.len());
+
+        let only_ru: Vec<&String> = ru.difference(&en).collect();
+        let only_en: Vec<&String> = en.difference(&ru).collect();
+        assert!(
+            only_ru.is_empty(),
+            "ключи есть только в ru: {:?}",
+            only_ru
+        );
+        assert!(
+            only_en.is_empty(),
+            "ключи есть только в en: {:?}",
+            only_en
+        );
+    }
+
+    #[test]
+    fn every_key_the_frontend_asks_for_is_defined_in_both_languages() {
+        // `I18n.t('key')` with a literal is the common case, and a typo in one
+        // of them is invisible until someone switches language.
+        let app = read_static("app.js");
+        let ru = strings_table(&app, "ru");
+        let en = strings_table(&app, "en");
+
+        let mut used: BTreeSet<String> = BTreeSet::new();
+        for name in ["app.js", "catalog.js", "detail.js"] {
+            let source = read_static(name);
+            for line in source.lines() {
+                let code = line.split("//").next().unwrap_or("");
+                let mut rest = code;
+                while let Some(at) = rest.find("I18n.t(") {
+                    rest = &rest[at + "I18n.t(".len()..];
+                    let arg = rest.trim_start();
+                    if let Some(inner) = arg.strip_prefix('\'') {
+                        if let Some(end) = inner.find('\'') {
+                            used.insert(inner[..end].to_string());
+                        }
+                    }
+                    rest = arg;
+                }
+            }
+        }
+        assert!(used.len() > 40, "найдено {} ключей — разбор сломался", used.len());
+
+        let missing: Vec<&String> = used
+            .iter()
+            .filter(|k| !ru.contains(*k) || !en.contains(*k))
+            .collect();
+        assert!(missing.is_empty(), "не переведены: {:?}", missing);
+    }
+
+    #[test]
+    fn every_data_i18n_attribute_in_the_html_has_a_translation() {
+        // The two shells are static, so their keys are enumerable here.
+        let ru = strings_table(&read_static("app.js"), "ru");
+        let en = strings_table(&read_static("app.js"), "en");
+        let mut used: BTreeSet<String> = BTreeSet::new();
+        for page in ["index.html", "anime.html"] {
+            let html = read(page);
+            let mut rest = html.as_str();
+            while let Some(at) = rest.find("data-i18n") {
+                rest = &rest[at..];
+                let Some(open) = rest.find('"') else { break };
+                let Some(close) = rest[open + 1..].find('"') else { break };
+                let key = &rest[open + 1..open + 1 + close];
+                if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !key.is_empty() {
+                    used.insert(key.to_string());
+                }
+                rest = &rest[open + 1 + close..];
+            }
+        }
+        assert!(used.len() >= 10, "найдено {} ключей разметки — разбор сломался", used.len());
+        let missing: Vec<&String> = used.iter().filter(|k| !ru.contains(*k) || !en.contains(*k)).collect();
+        assert!(missing.is_empty(), "не переведены в разметке: {:?}", missing);
+    }
+
+    /// The status values the frontend offers have to be the ones the API
+    /// accepts, and both sides spell them out in their own file.
+    #[test]
+    fn the_watchlist_statuses_the_frontend_offers_are_the_ones_the_api_accepts() {
+        // A status the UI offers but the API rejects turns "save" into a 400
+        // with no obvious cause, and a status the API accepts but the UI never
+        // offers is a bucket nobody can reach.
+        // The UI list is `STATUS_LABELS` in app.js, which is the one place the
+        // statuses are written down. `detail.js` builds its dropdown from it, so
+        // a second copy no longer exists to drift.
+        let app = read_static("app.js");
+        let start = app
+            .find("const STATUS_LABELS = {")
+            .expect("STATUS_LABELS в app.js")
+            + "const STATUS_LABELS = {".len();
+        // Each entry is `name: { ru: '…', en: '…' },` on one line, so a naive
+        // split on `}` would stop at the first value. The object ends at the
+        // line that closes the declaration, which is the only `};` on its own.
+        let end = app[start..]
+            .find("\n    };")
+            .expect("STATUS_LABELS не закрыта");
+        let offered: BTreeSet<String> = app[start..start + end]
+            .lines()
+            .filter_map(|l| {
+                let key = l.trim().split(':').next()?.trim();
+                (!key.is_empty()
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && l.trim_start().starts_with(key))
+                .then(|| key.to_string())
+            })
+            .collect();
+        // Five, and `paused` among them: the parser has to be reading the table
+        // rather than something smaller, or the rest of the test compares two
+        // lists it invented.
+        assert!(offered.contains("paused"), "paused не разобран: {:?}", offered);
+        assert_eq!(offered.len(), 5, "разобрано: {:?}", offered);
+        assert!(
+            read_static("detail.js")
+                .contains("const STATUS_OPTIONS = Object.keys(App.statusLabels)"),
+            "detail.js должен брать статусы из STATUS_LABELS, а не из своего списка"
+        );
+
+        // The catalogue's list chips are the same buckets, and they are the only
+        // way a `paused` row is reachable now, so they have to come from the
+        // same table too.
+        let catalog = read_static("catalog.js");
+        assert!(
+            catalog.contains("Object.keys(App.statusLabels).map"),
+            "catalog.js должен брать корзины из STATUS_LABELS"
+        );
+        assert!(
+            catalog.contains("App.isListBucket(next.in_list)"),
+            "catalog.js должен отбрасывать неизвестный in_list из ссылки"
+        );
+
+        let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/catalog.rs"))
+            .expect("catalog.rs");
+        let valid = api
+            .lines()
+            .find(|l| l.contains("VALID_STATUSES:"))
+            .expect("VALID_STATUSES в catalog.rs");
+        // The line is `pub const VALID_STATUSES: &[&str] = &[...]`, so the
+        // values are the part after the *last* `&[`.
+        let accepted: BTreeSet<String> = valid
+            .rsplit("&[")
+            .next()
+            .and_then(|s| s.split(']').next())
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|q| {
+                        let q = q.trim().trim_matches('"').trim();
+                        (!q.is_empty()).then(|| q.to_string())
+                    })
+                    .collect()
+            })
+            .expect("список статусов API");
+        assert!(!accepted.is_empty(), "VALID_STATUSES пуст: {}", valid);
+
+        let not_accepted: Vec<&String> = offered.iter().filter(|s| !accepted.contains(*s)).collect();
+        assert!(not_accepted.is_empty(), "фронтенд предлагает, API отвергает: {:?}", not_accepted);
+
+        // The reverse is a bucket the API stores into and no screen can ever
+        // show, and a status row that counts towards a tab nobody can open.
+        let unreachable: Vec<&String> = accepted.iter().filter(|s| !offered.contains(*s)).collect();
+        assert!(
+            unreachable.is_empty(),
+            "API принимает статусы, которых нет в интерфейсе: {:?}",
+            unreachable
+        );
+    }
+}
