@@ -10,6 +10,8 @@ mod api;
 mod config;
 mod db;
 mod error;
+#[cfg(test)]
+mod guard;
 mod http;
 mod loader;
 mod models;
