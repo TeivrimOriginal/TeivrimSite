@@ -254,3 +254,169 @@ fn store_staff(value: &serde_json::Value) -> Option<String> {
     serde_json::to_string(&out).ok()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A JSON:API character page as Kitsu returns it: relationships in `data`,
+    /// the people and characters they point at in `included`.
+    fn characters_page() -> serde_json::Value {
+        json!({
+            "data": [
+                { "id": "c1", "role": "Main", "voiceActors": [
+                    { "id": "p1", "language": "English", "name": "VA EN" },
+                    { "id": "p2", "language": "Japanese", "name": "VA JP" }
+                ]},
+                { "id": "c2", "role": "Supporting", "voiceActors": [] },
+                { "id": "c-missing", "role": "X", "voiceActors": [] }
+            ],
+            "included": [
+                { "type": "characters", "id": "c1",
+                  "attributes": { "name": "Eren Yeager", "image": { "large": "eren.jpg" } } },
+                { "type": "characters", "id": "c2",
+                  "attributes": { "name": "Armin", "image": null } },
+                { "type": "people", "id": "p1", "attributes": { "name": "VA EN" } },
+                { "type": "people", "id": "p2", "attributes": { "name": "VA JP" } }
+            ]
+        })
+    }
+
+    fn parsed(raw: &str) -> Vec<serde_json::Value> {
+        serde_json::from_str(raw).unwrap()
+    }
+
+    // ---------------------------------------------------------------- cast
+
+    #[test]
+    fn a_character_page_is_flattened_into_the_wire_shape() {
+        let out = store_cast(&characters_page()).unwrap();
+        let v = parsed(&out);
+        assert_eq!(v.len(), 2, "запись без персонажа в included пропускается");
+        assert_eq!(v[0]["name"], json!("Eren Yeager"));
+        assert_eq!(v[0]["image"], json!("eren.jpg"));
+        assert_eq!(v[0]["role"], json!("Main"));
+        assert_eq!(v[1]["name"], json!("Armin"));
+        assert_eq!(v[1]["image"], json!(null));
+    }
+
+    #[test]
+    fn the_japanese_voice_actor_wins() {
+        // Kitsu lists every dub; the Japanese one is the one the detail page
+        // shows first.
+        let v = parsed(&store_cast(&characters_page()).unwrap());
+        assert_eq!(v[0]["voice_actor"], json!("VA JP"));
+    }
+
+    #[test]
+    fn a_character_with_no_voice_actor_is_still_kept() {
+        // Two thirds of the catalogue has no cast enrichment at all; dropping
+        // the character because of a missing voice would empty the section.
+        let v = parsed(&store_cast(&characters_page()).unwrap());
+        assert_eq!(v[1]["voice_actor"], json!(null));
+    }
+
+    #[test]
+    fn a_voice_actor_that_is_not_included_is_ignored() {
+        // A dangling relationship must not produce a character with no name
+        // instead of a named one with no voice.
+        let page = json!({
+            "data": [{ "id": "c1", "role": "Main",
+                       "voiceActors": [{ "id": "p-x", "language": "Japanese", "name": "X" }] }],
+            "included": [{ "type": "characters", "id": "c1", "attributes": { "name": "Eren" } }]
+        });
+        let v = parsed(&store_cast(&page).unwrap());
+        assert_eq!(v[0]["name"], json!("Eren"));
+        assert_eq!(v[0]["voice_actor"], json!(null));
+    }
+
+    #[test]
+    fn a_character_without_a_name_is_skipped() {
+        let page = json!({
+            "data": [{ "id": "c1", "role": "Main" }],
+            "included": [{ "type": "characters", "id": "c1", "attributes": {} }]
+        });
+        assert_eq!(parsed(&store_cast(&page).unwrap()).len(), 0);
+    }
+
+    #[test]
+    fn an_empty_cast_page_is_an_empty_array_not_nothing() {
+        // `[]` and NULL are different to the loader: NULL means "never fetched",
+        // `[]` means "fetched, nobody in the cast".
+        assert_eq!(store_cast(&json!({ "data": [] })).unwrap(), "[]");
+    }
+
+    #[test]
+    fn a_cast_page_of_the_wrong_shape_is_rejected_rather_than_half_read() {
+        assert!(store_cast(&json!({})).is_none());
+        assert!(store_cast(&json!({ "data": "not an array" })).is_none());
+        assert!(store_cast(&json!([1, 2, 3])).is_none());
+    }
+
+    // --------------------------------------------------------------- staff
+
+    #[test]
+    fn a_staff_page_carries_positions_as_a_list() {
+        let page = json!({
+            "data": [{ "id": "s1" }],
+            "included": [
+                { "type": "people", "id": "s1", "attributes": {
+                    "name": "Sasha Ishida",
+                    "image": { "large": "sasha.jpg" },
+                    "role": { "attributes": { "title": "Director" } }
+                }}
+            ]
+        });
+        let v = parsed(&store_staff(&page).unwrap());
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0]["name"], json!("Sasha Ishida"));
+        assert_eq!(v[0]["image"], json!("sasha.jpg"));
+        assert_eq!(v[0]["positions"][0], json!("Director"));
+    }
+
+    #[test]
+    fn a_person_without_a_role_gets_an_empty_positions_list() {
+        // The detail page iterates positions unconditionally, so the array has
+        // to exist.
+        let page = json!({
+            "data": [{ "id": "s1" }],
+            "included": [{ "type": "people", "id": "s1", "attributes": { "name": "Nobody" } }]
+        });
+        let v = parsed(&store_staff(&page).unwrap());
+        assert_eq!(v[0]["positions"], json!([]));
+    }
+
+    #[test]
+    fn a_staff_page_of_the_wrong_shape_is_rejected() {
+        assert!(store_staff(&json!({ "included": [] })).is_none());
+        assert!(store_staff(&json!({ "data": {} })).is_none());
+    }
+
+    #[test]
+    fn a_person_without_a_name_is_skipped() {
+        let page = json!({
+            "data": [{ "id": "s1" }],
+            "included": [{ "type": "people", "id": "s1", "attributes": { "image": null } }]
+        });
+        assert_eq!(parsed(&store_staff(&page).unwrap()).len(), 0);
+    }
+
+    #[test]
+    fn the_two_shapes_do_not_leak_into_each_other() {
+        // `characters` and `people` live in the same `included` array, and both
+        // helpers search it by type: without that check every character would
+        // get a person's name.
+        let page = json!({
+            "data": [{ "id": "x1" }],
+            "included": [
+                { "type": "characters", "id": "x1", "attributes": { "name": "Eren" } },
+                { "type": "people", "id": "x1", "attributes": { "name": "Sasha" } }
+            ]
+        });
+        let cast = parsed(&store_cast(&page).unwrap());
+        let staff = parsed(&store_staff(&page).unwrap());
+        assert_eq!(cast[0]["name"], json!("Eren"));
+        assert_eq!(staff[0]["name"], json!("Sasha"));
+    }
+}
+
