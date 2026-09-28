@@ -235,3 +235,147 @@ impl ImageCache {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed(raw: &str) -> String {
+        parse_and_authorize(raw).unwrap_or_else(|e| panic!("{} отклонён: {}", raw, e))
+    }
+
+    fn rejected(raw: &str) {
+        match parse_and_authorize(raw) {
+            Ok(v) => panic!("{} не должен был пройти (получено {})", raw, v),
+            // The message must not enumerate the allow-list.
+            Err(e) => assert!(!e.to_string().contains("anilist.co"), "утечка списка хостов"),
+        }
+    }
+
+    #[test]
+    fn the_known_cdns_are_allowed() {
+        for host in ["s4.anilist.co", "s1.anilist.co", "img.anili.st", "media.kitsu.app", "shikimori.one"] {
+            let url = format!("https://{}/cover.jpg", host);
+            assert_eq!(allowed(&url), url);
+        }
+    }
+
+    #[test]
+    fn a_port_in_the_url_is_tolerated() {
+        // Some CDNs are reached on a non-default port in a lab setup; the host
+        // is what is authorised, not the whole origin.
+        let url = "https://media.kitsu.app:443/cover.jpg";
+        assert_eq!(allowed(url), url);
+    }
+
+    #[test]
+    fn the_host_is_matched_case_insensitively() {
+        // The frontend sometimes upper-cases a host while building a URL.
+        assert!(allowed("https://S4.ANILIST.CO/cover.jpg").starts_with("https://S4"));
+    }
+
+    #[test]
+    fn an_arbitrary_host_is_refused() {
+        // Without this the endpoint is an open relay into the deployment's
+        // own network.
+        rejected("https://evil.example/cover.jpg");
+        rejected("https://localhost:8080/");
+        rejected("https://169.254.169.254/latest/meta-data/");
+        rejected("https://127.0.0.1/admin");
+    }
+
+    #[test]
+    fn a_userinfo_trick_cannot_hide_the_real_host() {
+        // `https://s4.anilist.co@evil.example/` is served by evil.example, and
+        // a naive `split('@')` on the wrong side gets it exactly backwards.
+        rejected("https://s4.anilist.co@evil.example/cover.jpg");
+    }
+
+    #[test]
+    fn a_lookalike_host_is_refused() {
+        rejected("https://s4.anilist.co.evil.example/x.jpg");
+        rejected("https://evil-s4.anilist.co.example/x.jpg");
+        rejected("https://nots4.anilist.co/x.jpg");
+    }
+
+    #[test]
+    fn a_non_http_scheme_is_refused() {
+        // `file://` and `gopher://` are not what an <img> can load anyway.
+        rejected("file:///etc/passwd");
+        rejected("ftp://s4.anilist.co/x.jpg");
+        rejected("javascript:alert(1)");
+        rejected("/static/cover.jpg");
+        rejected("s4.anilist.co/cover.jpg");
+    }
+
+    #[test]
+    fn a_percent_encoded_url_is_decoded_before_the_check() {
+        // The client percent-encodes the whole target, so the check has to see
+        // the decoded host or it authorises nothing at all.
+        assert!(allowed("https%3A%2F%2Fs4.anilist.co%2Fcover.jpg").contains("s4.anilist.co"));
+        rejected("https%3A%2F%2Fevil.example%2Fx.jpg");
+    }
+
+    #[test]
+    fn a_percent_encoded_scheme_is_still_checked() {
+        // `%68ttps://` decodes to `https://`; the check happens after decoding,
+        // so the result is the same as the plain form.
+        assert!(allowed("%68ttps://s4.anilist.co/x.jpg").contains("s4.anilist.co"));
+    }
+
+    #[test]
+    fn a_url_without_a_path_is_still_a_valid_target() {
+        assert_eq!(allowed("https://shikimori.one"), "https://shikimori.one");
+    }
+
+    // ---------------------------------------------------------- the cache
+
+    #[test]
+    fn the_cache_round_trips_a_body() {
+        let c = ImageCache::default();
+        assert!(c.get("k").is_none());
+        c.put("k", b"bytes".to_vec(), "image/png".to_string());
+        let hit = c.get("k").unwrap();
+        assert_eq!(hit.body, b"bytes".to_vec());
+        assert_eq!(hit.content_type, "image/png");
+    }
+
+    #[test]
+    fn the_cache_forgets_a_stale_entry() {
+        // A cover that changed upstream must not be served for three days.
+        let c = ImageCache::default();
+        c.put("k", b"old".to_vec(), "image/jpeg".to_string());
+        {
+            let mut map = c.0.lock().unwrap();
+            let entry = map.get_mut("k").unwrap();
+            entry.stored = Instant::now() - CACHE_TTL - std::time::Duration::from_secs(1);
+        }
+        assert!(c.get("k").is_none());
+        let map = c.0.lock().unwrap();
+        assert!(!map.contains_key("k"), "протухшая запись должна быть удалена");
+    }
+
+    #[test]
+    fn the_cache_evicts_when_it_is_full() {
+        // A precise LRU is not worth the bookkeeping, but the map must still
+        // stay bounded.
+        let c = ImageCache::default();
+        for i in 0..CACHE_MAX_ENTRIES + 10 {
+            c.put(&format!("k{}", i), vec![0u8; 1], "image/jpeg".to_string());
+        }
+        let map = c.0.lock().unwrap();
+        assert!(
+            map.len() <= CACHE_MAX_ENTRIES,
+            "кэш вырос до {} записей",
+            map.len()
+        );
+    }
+
+    #[test]
+    fn the_placeholder_is_a_valid_svg() {
+        // It is served with an image content type, so it has to be one.
+        let s = std::str::from_utf8(PLACEHOLDER).unwrap();
+        assert!(s.starts_with("<svg"));
+        assert!(s.ends_with("</svg>"));
+    }
+}

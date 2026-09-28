@@ -271,6 +271,10 @@ pub fn list_genres(
     // The count is an aggregate, so the threshold belongs in HAVING. v1 wrote
     // `WHERE count > 0` against the same alias, which SQLite rejects outright
     // ("misuse of aggregate") — so the genre list never worked at all.
+    //
+    // The comparison is inclusive: the parameter is named `min_count` and the
+    // default is 1, so `>` silently dropped every genre attached to exactly
+    // one title — which is most of the long tail in the `tag` category.
     let mut sql = String::from(
         "SELECT g.id, g.slug, g.name_en, g.name_ru, g.category, COUNT(ag.uid) AS c
          FROM genres g
@@ -280,7 +284,7 @@ pub fn list_genres(
     if category.is_some() {
         sql.push_str(" AND g.category = ?2");
     }
-    sql.push_str(" GROUP BY g.id HAVING c > ?1 ORDER BY c DESC, g.name_en ASC");
+    sql.push_str(" GROUP BY g.id HAVING c >= ?1 ORDER BY c DESC, g.name_en ASC");
 
     let mut stmt = conn.prepare(&sql)?;
     let map = |r: &rusqlite::Row<'_>| {
@@ -299,5 +303,288 @@ pub fn list_genres(
         None => stmt.query_map(params![min_count], map)?,
     };
     rows.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::conn;
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    /// One catalogue row with the given JSON blobs, as a source loader would
+    /// have left it.
+    fn row(conn: &Connection, uid: &str, genres: Option<&str>, tags: Option<&str>, studios: Option<&str>) {
+        conn.execute(
+            "INSERT INTO anime (uid, genres_json, tags_json, studios_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![uid, genres, tags, studios],
+        )
+        .unwrap();
+    }
+
+    fn slugs(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT slug FROM genres ORDER BY slug").unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    // ------------------------------------------------------------- linking
+
+    #[test]
+    fn anilist_genres_become_genre_rows() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action","Slice of Life"]"#), None, None);
+        assert_eq!(match_uids(&c, &["al:1".to_string()]), 1);
+        assert_eq!(slugs(&c), vec!["action".to_string(), "slice of life".to_string()]);
+
+        let category: String = c
+            .query_row("SELECT category FROM genres WHERE slug = 'action'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(category, "genre");
+    }
+
+    #[test]
+    fn anilist_tags_become_tag_rows_and_not_genres() {
+        // This split is the whole point of the rewrite: v1 created one row per
+        // distinct tag, so "Male Protagonist" sat next to "Action" in the same
+        // filter list.
+        let c = conn();
+        row(
+            &c,
+            "al:1",
+            Some(r#"["Action"]"#),
+            Some(r#"[{"name":"Male Protagonist","rank":90,"isMediaSpoiler":false}]"#),
+            None,
+        );
+        match_uids(&c, &["al:1".to_string()]);
+
+        let category: String = c
+            .query_row("SELECT category FROM genres WHERE slug = 'male protagonist'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(category, "tag");
+    }
+
+    #[test]
+    fn kitsu_studios_become_studio_rows() {
+        let c = conn();
+        row(
+            &c,
+            "ks:1",
+            None,
+            None,
+            Some(r#"[{"name":"Wit Studio","isAnimationStudio":true}]"#),
+        );
+        match_uids(&c, &["ks:1".to_string()]);
+        let category: String = c
+            .query_row("SELECT category FROM genres WHERE slug = 'wit studio'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(category, "studio");
+    }
+
+    #[test]
+    fn a_label_linked_as_a_tag_is_promoted_when_a_genre_claims_it() {
+        // AniList tags and genres overlap; whichever is more specific wins, and
+        // it must not flip back on the next pass.
+        let c = conn();
+        row(
+            &c,
+            "al:1",
+            Some(r#"["Military"]"#),
+            Some(r#"[{"name":"Military"}]"#),
+            None,
+        );
+        match_uids(&c, &["al:1".to_string()]);
+        let category: String = c
+            .query_row("SELECT category FROM genres WHERE slug = 'military'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(category, "genre");
+    }
+
+    #[test]
+    fn a_broken_json_blob_does_not_stop_the_row() {
+        // A truncated blob from a crashed import must not lose the whole row:
+        // the link step is what makes the genre filter usable.
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action", "#), Some("{oops"), Some("nope"));
+        assert_eq!(match_uids(&c, &["al:1".to_string()]), 1);
+        assert!(slugs(&c).is_empty(), "битые данные не должны порождать строки");
+
+        let marked: Option<i64> = c
+            .query_row("SELECT genres_matched_at FROM anime WHERE uid = 'al:1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(marked.is_some(), "строка всё равно помечена обработанной");
+    }
+
+    #[test]
+    fn a_null_blob_is_simply_nothing_to_link() {
+        let c = conn();
+        row(&c, "al:1", None, None, None);
+        assert_eq!(match_uids(&c, &["al:1".to_string()]), 1);
+        assert!(slugs(&c).is_empty());
+    }
+
+    #[test]
+    fn empty_and_overlong_labels_are_ignored() {
+        // An empty slug would match every other row; an 80+ character label is
+        // a whole sentence, not a genre.
+        let c = conn();
+        let long = "x".repeat(81);
+        row(
+            &c,
+            "al:1",
+            Some(&json!(["", "   ", long, "Action"]).to_string()),
+            None,
+            None,
+        );
+        match_uids(&c, &["al:1".to_string()]);
+        assert_eq!(slugs(&c), vec!["action".to_string()]);
+    }
+
+    #[test]
+    fn linking_the_same_row_twice_is_idempotent() {
+        // The loader calls this per page and again from the final pass.
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action"]"#), None, None);
+        match_uids(&c, &["al:1".to_string()]);
+        match_uids(&c, &["al:1".to_string()]);
+        assert_eq!(slugs(&c), vec!["action".to_string()]);
+        let links: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime_genres", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 1);
+    }
+
+    #[test]
+    fn an_unknown_uid_is_reported_and_the_batch_continues() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action"]"#), None, None);
+        assert_eq!(
+            match_uids(&c, &["al:missing".to_string(), "al:1".to_string()]),
+            1,
+            "пропущенная строка не должна прерывать пачку"
+        );
+    }
+
+    #[test]
+    fn an_empty_batch_is_a_no_op() {
+        let c = conn();
+        assert_eq!(match_uids(&c, &[]), 0);
+    }
+
+    #[test]
+    fn two_rows_sharing_a_genre_get_one_genre_row_and_two_links() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action"]"#), None, None);
+        row(&c, "al:2", Some(r#"["action"]"#), None, None);
+        match_uids(&c, &["al:1".to_string(), "al:2".to_string()]);
+        assert_eq!(slugs(&c), vec!["action".to_string()]);
+        let links: i64 = c.query_row("SELECT COUNT(*) FROM anime_genres", [], |r| r.get(0)).unwrap();
+        assert_eq!(links, 2);
+    }
+
+    // ------------------------------------------------------------- listing
+
+    #[test]
+    fn list_genres_counts_links_and_keeps_even_the_rare_ones() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action","Drama"]"#), None, None);
+        row(&c, "al:2", Some(r#"["Action"]"#), None, None);
+        row(&c, "al:3", Some(r#"["Horror"]"#), None, None);
+        match_uids(&c, &["al:1".to_string(), "al:2".to_string(), "al:3".to_string()]);
+        apply_static_ru_sync(&c).unwrap();
+
+        // `min_count` is inclusive, so a genre attached to a single title is
+        // still offered — most of the long tail looks like that.
+        let rows = list_genres(&c, None, 1).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.name_en.as_str()).collect();
+        assert_eq!(names, vec!["Action", "Drama", "Horror"]);
+        assert_eq!(rows[0].count, 2);
+        assert_eq!(rows[2].count, 1);
+        // The static table is the source of the Russian labels the filter sheet
+        // shows.
+        assert_eq!(rows[0].name_ru.as_deref(), Some("Боевик"));
+    }
+
+    #[test]
+    fn list_genres_honours_a_higher_threshold() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action","Drama"]"#), None, None);
+        row(&c, "al:2", Some(r#"["Action"]"#), None, None);
+        match_uids(&c, &["al:1".to_string(), "al:2".to_string()]);
+        let rows = list_genres(&c, None, 2).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.name_en.as_str()).collect();
+        assert_eq!(names, vec!["Action"]);
+    }
+
+    #[test]
+    fn list_genres_orders_by_count_then_name() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action"]"#), None, None);
+        row(&c, "al:2", Some(r#"["Drama"]"#), None, None);
+        row(&c, "al:3", Some(r#"["Action","Drama"]"#), None, None);
+        match_uids(&c, &["al:1".to_string(), "al:2".to_string(), "al:3".to_string()]);
+        let rows = list_genres(&c, None, 1).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.name_en.as_str()).collect();
+        assert_eq!(names, vec!["Action", "Drama"], "две ссылки идут раньше одной");
+        assert_eq!(rows[0].count, 2);
+        assert_eq!(rows[1].count, 2);
+    }
+
+    #[test]
+    fn list_genres_can_be_restricted_to_one_category() {
+        let c = conn();
+        row(
+            &c,
+            "al:1",
+            Some(r#"["Action"]"#),
+            Some(r#"[{"name":"Military"}]"#),
+            None,
+        );
+        match_uids(&c, &["al:1".to_string()]);
+        assert_eq!(list_genres(&c, Some("genre"), 1).unwrap().len(), 1);
+        assert_eq!(list_genres(&c, Some("tag"), 1).unwrap().len(), 1);
+        assert_eq!(list_genres(&c, Some("studio"), 1).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_genres_of_an_empty_catalogue_is_empty() {
+        let c = conn();
+        assert!(list_genres(&c, None, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_genres_accepts_a_zero_threshold() {
+        let c = conn();
+        row(&c, "al:1", Some(r#"["Action"]"#), None, None);
+        // Unlinked genres are pruned at the end of a sync; until then the list
+        // endpoint has to tolerate a minimum of 0, which means "including
+        // genres nothing links to yet".
+        c.execute(
+            "INSERT INTO genres (slug, name_en, category, created_at) VALUES ('orphan', 'Orphan', 'genre', 1)",
+            [],
+        )
+        .unwrap();
+        let rows = list_genres(&c, None, 0).unwrap();
+        assert!(rows.iter().any(|r| r.name_en == "Orphan" && r.count == 0));
+    }
+
+    // ----------------------------------------------------------- json input
+
+    #[test]
+    fn parse_string_array_is_total() {
+        assert!(parse_string_array("not json").is_empty());
+        assert!(parse_string_array("{}").is_empty());
+        assert_eq!(parse_string_array(r#"["a","b"]"#), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn parse_object_names_takes_only_the_name_field() {
+        assert_eq!(
+            parse_object_names(r#"[{"name":"A"},{"name":"B","rank":1},{"rank":2}]"#),
+            vec!["A".to_string(), "B".to_string()]
+        );
+        assert!(parse_object_names("[1,2,3]").is_empty());
+    }
 }
 

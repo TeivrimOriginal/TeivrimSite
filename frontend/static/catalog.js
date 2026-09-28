@@ -26,6 +26,10 @@
     ];
 
     /** Filter state. Mirrors the URL, which is the source of truth on load. */
+    // Every key here is also a parameter name on `GET /api/anime`, and the
+    // list endpoint answers 400 to an unknown one. `has_russian` used to be
+    // called `has_ru` here, so ticking the "Russian title only" box sent
+    // `has_ru=yes` and the whole catalogue page came back as an error.
     const defaults = () => ({
         q: '',
         sort: 'popularity',
@@ -39,7 +43,7 @@
         score_from: '',
         score_to: '',
         adult: '',
-        has_ru: '',
+        has_russian: '',
         has_trailer: '',
         in_list: '',
     });
@@ -317,10 +321,10 @@
             { value: 'only', label: I18n.t('adult_only') },
         ], state.adult, (v) => { state.adult = v; }));
 
-        body.appendChild(selectField('has_ru', 'f-has-ru', [
+        body.appendChild(selectField('has_russian', 'f-has-ru', [
             { value: '', label: I18n.t('has_ru_any') },
             { value: 'yes', label: I18n.t('has_ru_yes') },
-        ], state.has_ru, (v) => { state.has_ru = v; }));
+        ], state.has_russian, (v) => { state.has_russian = v; }));
 
         const trailer = el('label', { class: 'switch-row' }, [
             el('span', {}, [
@@ -368,7 +372,7 @@
             ['country', state.country],
             ['season', state.season ? seasonLabel(state.season) : ''],
             ['adult', state.adult === 'no' ? I18n.t('adult_safe') : state.adult === 'only' ? I18n.t('adult_only') : ''],
-            ['has_ru', state.has_ru === 'yes' ? I18n.t('has_ru_yes') : ''],
+            ['has_russian', state.has_russian === 'yes' ? I18n.t('has_ru_yes') : ''],
             ['has_trailer', state.has_trailer === 'yes' ? I18n.t('has_trailer') : ''],
         ].forEach(([key, label]) => {
             if (!label) return;
@@ -394,7 +398,7 @@
 
     function countActive() {
         let n = 0;
-        ['format', 'status', 'season', 'genre', 'country', 'adult', 'has_ru', 'has_trailer'].forEach((k) => {
+        ['format', 'status', 'season', 'genre', 'country', 'adult', 'has_russian', 'has_trailer'].forEach((k) => {
             if (state[k]) n++;
         });
         if (state.year_from || state.year_to) n++;

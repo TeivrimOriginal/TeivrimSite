@@ -40,7 +40,7 @@ where
     Deserialize::deserialize(deserializer).map(Some)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ListFilter {
     pub status: Option<String>,
     /// `1` restricts to starred entries.
@@ -241,4 +241,340 @@ pub fn list_with_anime(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::detail::load_library_entry;
+    use crate::db::testing::test_db;
+    use actix_web::http::StatusCode;
+    use actix_web::ResponseError;
+    use serde_json::json;
+
+    fn seed(test_db: &crate::db::testing::TestDb) -> i64 {
+        {
+            let c = test_db.conn();
+            c.execute("INSERT INTO anime (uid, episodes, is_adult, created_at) VALUES ('al:1', 25, 0, 1)", [])
+                .unwrap();
+            c.execute("INSERT INTO anime (uid, episodes, is_adult, created_at) VALUES ('al:2', 12, 0, 1)", [])
+                .unwrap();
+            c.execute("INSERT INTO users (username, username_key, password_hash, created_at) VALUES ('u','u','h',1)", [])
+                .unwrap();
+        }
+        test_db
+            .conn()
+            .query_row("SELECT id FROM users", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn up(uid: &str) -> UpsertBody {
+        UpsertBody {
+            uid: uid.to_string(),
+            status: None,
+            is_favorite: None,
+            score: None,
+            progress: None,
+            notes: None,
+        }
+    }
+
+    // ------------------------------------------------- the double Option
+
+    #[test]
+    fn an_absent_field_is_left_alone_and_a_null_clears_it() {
+        // PATCH semantics in one test: the three states have to stay
+        // distinguishable, which is the entire reason for `Option<Option<T>>`.
+        let absent: UpsertBody = serde_json::from_value(json!({ "uid": "al:1" })).unwrap();
+        assert_eq!(absent.score, None);
+        assert_eq!(absent.progress, None);
+        assert_eq!(absent.notes, None);
+
+        let cleared: UpsertBody =
+            serde_json::from_value(json!({ "uid": "al:1", "score": null, "notes": null })).unwrap();
+        assert_eq!(cleared.score, Some(None));
+        assert_eq!(cleared.notes, Some(None));
+        assert_eq!(cleared.progress, None);
+
+        let set: UpsertBody =
+            serde_json::from_value(json!({ "uid": "al:1", "score": 8, "notes": "ok" })).unwrap();
+        assert_eq!(set.score, Some(Some(8)));
+        assert_eq!(set.notes, Some(Some("ok".to_string())));
+    }
+
+    #[test]
+    fn a_plain_option_would_not_be_able_to_clear_a_value() {
+        // The counter-example, stated as a test: with `Option<i64>` both
+        // documents below parse to None and "clear the score" becomes
+        // impossible to express.
+        let cleared: UpsertBody = serde_json::from_value(json!({ "uid": "al:1", "score": null })).unwrap();
+        let absent: UpsertBody = serde_json::from_value(json!({ "uid": "al:1" })).unwrap();
+        assert_ne!(cleared.score, absent.score);
+    }
+
+    // ---------------------------------------------------------- validation
+
+    #[test]
+    fn a_malformed_uid_is_refused() {
+        let db = test_db();
+        let uid = seed(&db);
+        let e = upsert(&db.handle, uid, up("")).unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::BAD_REQUEST);
+        let long = "x".repeat(65);
+        let e = upsert(&db.handle, uid, up(&long)).unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn an_unknown_status_is_refused_and_lists_the_valid_ones() {
+        // A silently accepted status leaves the entry invisible in every tab.
+        let db = test_db();
+        let uid = seed(&db);
+        let mut b = up("al:1");
+        b.status = Some("watchingg".into());
+        let e = upsert(&db.handle, uid, b).unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::BAD_REQUEST);
+        assert!(e.to_string().contains("watching"), "{}", e);
+    }
+
+    #[test]
+    fn every_known_status_is_accepted() {
+        let db = test_db();
+        let uid = seed(&db);
+        for s in crate::api::catalog::VALID_STATUSES {
+            let mut b = up("al:1");
+            b.status = Some((*s).to_string());
+            let entry = upsert(&db.handle, uid, b).unwrap();
+            assert_eq!(&entry.status, s);
+        }
+    }
+
+    #[test]
+    fn a_score_outside_one_to_ten_is_refused() {
+        let db = test_db();
+        let uid = seed(&db);
+        for bad in [0, 11, -1] {
+            let mut b = up("al:1");
+            b.score = Some(Some(bad));
+            let e = upsert(&db.handle, uid, b).unwrap_err();
+            assert_eq!(e.status_code(), StatusCode::BAD_REQUEST, "оценка {}", bad);
+        }
+    }
+
+    #[test]
+    fn a_title_that_is_not_in_the_catalogue_is_refused() {
+        // Otherwise a typo silently creates an entry that can never be shown.
+        let db = test_db();
+        let uid = seed(&db);
+        let e = upsert(&db.handle, uid, up("al:9999")).unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    // -------------------------------------------------------------- upsert
+
+    #[test]
+    fn a_first_add_lands_in_planned() {
+        let db = test_db();
+        let uid = seed(&db);
+        let e = upsert(&db.handle, uid, up("al:1")).unwrap();
+        assert_eq!(e.uid, "al:1");
+        assert_eq!(e.status, "planned");
+        assert!(!e.is_favorite);
+        // The episode count is copied from the catalogue so the progress bar has
+        // something to divide by.
+        assert_eq!(e.episodes, Some(25));
+    }
+
+    #[test]
+    fn an_absent_field_leaves_the_stored_value_alone() {
+        let db = test_db();
+        let uid = seed(&db);
+        let mut first = up("al:1");
+        first.score = Some(Some(9));
+        first.progress = Some(Some(5));
+        first.notes = Some(Some("заметка".into()));
+        upsert(&db.handle, uid, first).unwrap();
+
+        let mut second = up("al:1");
+        second.status = Some("watching".into());
+        let e = upsert(&db.handle, uid, second).unwrap();
+        assert_eq!(e.status, "watching");
+        assert_eq!(e.score, Some(9));
+        assert_eq!(e.progress, Some(5));
+        assert_eq!(e.notes.as_deref(), Some("заметка"));
+    }
+
+    #[test]
+    fn an_explicit_null_clears_the_stored_value() {
+        let db = test_db();
+        let uid = seed(&db);
+        let mut first = up("al:1");
+        first.score = Some(Some(9));
+        first.notes = Some(Some("заметка".into()));
+        upsert(&db.handle, uid, first).unwrap();
+
+        let mut second = up("al:1");
+        second.score = Some(None);
+        second.notes = Some(None);
+        let e = upsert(&db.handle, uid, second).unwrap();
+        assert_eq!(e.score, None);
+        assert_eq!(e.notes, None);
+    }
+
+    #[test]
+    fn the_episode_count_is_refreshed_from_the_catalogue() {
+        // A running series gets more episodes between sessions; the stored copy
+        // has to follow or the progress bar stops moving.
+        let db = test_db();
+        let uid = seed(&db);
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+        db.conn().execute("UPDATE anime SET episodes = 30 WHERE uid = 'al:1'", []).unwrap();
+        let e = upsert(&db.handle, uid, up("al:1")).unwrap();
+        assert_eq!(e.episodes, Some(30));
+    }
+
+    #[test]
+    fn the_favourite_star_is_independent_of_the_status() {
+        // "Plan to watch" and "favourite" are different intentions, so the star
+        // is a separate flag.
+        let db = test_db();
+        let uid = seed(&db);
+        let mut b = up("al:1");
+        b.is_favorite = Some(true);
+        let e = upsert(&db.handle, uid, b).unwrap();
+        assert!(e.is_favorite);
+        assert_eq!(e.status, "planned");
+    }
+
+    // ------------------------------------------------------------- remove
+
+    #[test]
+    fn removing_an_entry_works_once() {
+        let db = test_db();
+        let uid = seed(&db);
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+        remove(&db.handle, uid, "al:1").unwrap();
+        let e = remove(&db.handle, uid, "al:1").unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn removing_someone_elses_entry_is_a_not_found() {
+        // The delete is scoped by user_id, so one account cannot clear another.
+        let db = test_db();
+        let uid = seed(&db);
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+        let e = remove(&db.handle, 999, "al:1").unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::NOT_FOUND);
+        assert!(load_library_entry(&db.conn(), uid, "al:1").unwrap().is_some());
+    }
+
+    // ------------------------------------------------------------- counts
+
+    #[test]
+    fn counts_cover_every_tab() {
+        let db = test_db();
+        let uid = seed(&db);
+        for (u, status, fav) in [
+            ("al:1", Some("watching"), Some(true)),
+            ("al:2", Some("watching"), Some(false)),
+            // No star in this body: PATCH semantics mean "leave as is", which is
+            // the only way the star survives a second edit of the same entry.
+            ("al:1", Some("completed"), None),
+        ] {
+            let mut b = up(u);
+            b.status = status.map(|s| s.to_string());
+            b.is_favorite = fav;
+            upsert(&db.handle, uid, b).unwrap();
+        }
+        let c = counts(&db.conn(), uid).unwrap();
+        assert_eq!(c.watching, 1, "al:1 переехал в completed вторым проходом");
+        assert_eq!(c.planned, 0);
+        assert_eq!(c.completed, 1);
+        assert_eq!(c.dropped, 0);
+        assert_eq!(c.favorites, 1);
+        assert_eq!(c.total, 2);
+    }
+
+    #[test]
+    fn the_counts_of_an_empty_list_are_all_zero() {
+        // The tabs render from these numbers; NULL would break the arithmetic.
+        let db = test_db();
+        let uid = seed(&db);
+        let c = counts(&db.conn(), uid).unwrap();
+        assert_eq!((c.watching, c.planned, c.completed, c.dropped, c.favorites, c.total), (0, 0, 0, 0, 0, 0));
+    }
+
+    // --------------------------------------------------------------- list
+
+    #[test]
+    fn the_list_joins_the_catalogue_metadata() {
+        // One request instead of N: the watchlist screen needs a title and a
+        // cover for every row.
+        let db = test_db();
+        let uid = seed(&db);
+        db.conn()
+            .execute("UPDATE anime SET title_romaji = 'Shingeki no Kyojin' WHERE uid = 'al:1'", [])
+            .unwrap();
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+
+        let rows = list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].item.uid, "al:1");
+        assert_eq!(rows[0].item.title, "Shingeki no Kyojin");
+        assert_eq!(rows[0].library.status, "planned");
+    }
+
+    #[test]
+    fn the_list_can_be_filtered_by_status_and_by_star() {
+        let db = test_db();
+        let uid = seed(&db);
+        let mut a = up("al:1");
+        a.status = Some("watching".into());
+        a.is_favorite = Some(true);
+        upsert(&db.handle, uid, a).unwrap();
+        upsert(&db.handle, uid, up("al:2")).unwrap();
+
+        let by_status = ListFilter {
+            status: Some("watching".into()),
+            favorites: None,
+            limit: None,
+            offset: None,
+        };
+        let rows = list_with_anime(&db.conn(), uid, &by_status).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].item.uid, "al:1");
+
+        let starred = ListFilter {
+            status: None,
+            favorites: Some("1".into()),
+            limit: None,
+            offset: None,
+        };
+        assert_eq!(list_with_anime(&db.conn(), uid, &starred).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_list_of_another_user_is_empty() {
+        let db = test_db();
+        let uid = seed(&db);
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+        let rows = list_with_anime(&db.conn(), 999, &ListFilter::default()).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn the_list_limit_is_clamped() {
+        let db = test_db();
+        let uid = seed(&db);
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+        let huge = ListFilter {
+            status: None,
+            favorites: None,
+            limit: Some(100_000),
+            offset: Some(-5),
+        };
+        // A negative offset would make SQLite read from the end of the table.
+        assert_eq!(list_with_anime(&db.conn(), uid, &huge).unwrap().len(), 1);
+    }
 }

@@ -155,7 +155,16 @@ fn apply_schema(pool: &Pool) -> Result<bool, rusqlite::Error> {
     let conn = pool
         .get()
         .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+    apply_schema_on(&conn)
+}
 
+/// The schema, applied to an arbitrary connection.
+///
+/// Split out from [`apply_schema`] so tests can build a real catalogue in an
+/// in-memory database and exercise the actual SQL rather than a hand-written
+/// approximation of it: a fake schema in a test proves nothing about the real
+/// one.
+pub(crate) fn apply_schema_on(conn: &Connection) -> Result<bool, rusqlite::Error> {
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
@@ -363,7 +372,7 @@ fn apply_schema(pool: &Pool) -> Result<bool, rusqlite::Error> {
 
     // FTS5 is optional at build time, so the index is created in a second step
     // and the result is remembered.
-    let fts = create_fts(&conn).unwrap_or_else(|e| {
+    let fts = create_fts(conn).unwrap_or_else(|e| {
         log_warn(&format!(
             "[db] FTS5 недоступен ({}), поиск переключён на LIKE-сканы",
             e
@@ -377,13 +386,13 @@ fn apply_schema(pool: &Pool) -> Result<bool, rusqlite::Error> {
         let indexed: i64 = conn
             .query_row("SELECT COUNT(*) FROM anime_fts", [], |r| r.get(0))
             .unwrap_or(0);
-        let total = count(&conn, "anime")?;
+        let total = count(conn, "anime")?;
         if indexed != total {
             log_info(&format!(
                 "[db] пересобираю поисковый индекс ({} из {} записей)",
                 indexed, total
             ));
-            if let Err(e) = rebuild_fts(&conn) {
+            if let Err(e) = rebuild_fts(conn) {
                 log_error(&format!("[db] индекс поиска не пересобран: {}", e));
             }
         }
@@ -504,5 +513,301 @@ pub fn mark_error(conn: &Connection, source: &str, task: &str, err: &str) {
         rusqlite::params![source, task, short, now_ts()],
     ) {
         log_error(&format!("[sync] не удалось записать ошибку: {}", e));
+    }
+}
+
+// ==================================================================
+// Tests
+// ==================================================================
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// A fully migrated in-memory catalogue.
+    ///
+    /// Every test in the crate that needs the database goes through here, so
+    /// the SQL under test is the same SQL production runs — a fixture written
+    /// by hand would drift from the migrations on the first column change and
+    /// keep passing while the real thing broke.
+    pub(crate) fn conn() -> Connection {
+        let c = Connection::open_in_memory().expect("in-memory sqlite");
+        apply_schema_on(&c).expect("schema");
+        c
+    }
+
+    /// Inserts one minimal catalogue row. Returns its uid.
+    pub(crate) fn insert_anime(conn: &Connection, uid: &str, title_romaji: Option<&str>) {
+        conn.execute(
+            "INSERT INTO anime (uid, title_romaji, title_key, is_adult, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 0, 1, 1)",
+            rusqlite::params![
+                uid,
+                title_romaji,
+                title_romaji.map(crate::loader::title_key)
+            ],
+        )
+        .expect("insert anime");
+    }
+
+    /// A file-backed catalogue behind a real [`Handle`], for the code that only
+    /// accepts a handle: the auth endpoints, the watchlist and the handlers.
+    ///
+    /// SQLite gives every `:memory:` connection its own private database, so a
+    /// pool of them would see `no such table: users`. A file per test is the
+    /// only way to get the same object a running server holds.
+    pub(crate) struct TestDb {
+        pub handle: Handle,
+        path: std::path::PathBuf,
+    }
+
+    impl TestDb {
+        pub(crate) fn conn(&self) -> pool::PooledConn<'_> {
+            self.handle.conn().expect("connection from the pool")
+        }
+    }
+
+    impl Drop for TestDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{}", self.path.display(), suffix));
+            }
+        }
+    }
+
+    pub(crate) fn test_db() -> TestDb {
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let path = std::env::temp_dir().join(format!("anime-db-test-{}-{}.db", std::process::id(), n));
+        TestDb {
+            handle: Db::open(&path, 2).unwrap_or_else(|e| panic!("Db::open: {}", e)),
+            path,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{conn, insert_anime};
+    use super::*;
+
+    // ---------------------------------------------------------- checkpoints
+
+    #[test]
+    fn checkpoint_defaults_to_the_start_for_an_unknown_task() {
+        // Loaders read this before every pass; a missing row must read as
+        // "page 0, nothing saved, not finished" rather than error out.
+        let c = conn();
+        let cp = get_checkpoint(&c, "anilist", "sort:POPULARITY_DESC");
+        assert_eq!(cp.last_page, 0);
+        assert_eq!(cp.total_saved, 0);
+        assert!(!cp.finished);
+    }
+
+    #[test]
+    fn checkpoint_round_trips_through_save() {
+        let c = conn();
+        save_checkpoint(&c, "anilist", "sort:ID", 7, 350, false).unwrap();
+        let cp = get_checkpoint(&c, "anilist", "sort:ID");
+        assert_eq!((cp.last_page, cp.total_saved, cp.finished), (7, 350, false));
+    }
+
+    #[test]
+    fn checkpoint_is_upserted_per_task_not_per_source() {
+        let c = conn();
+        save_checkpoint(&c, "anilist", "sort:ID", 3, 150, true).unwrap();
+        save_checkpoint(&c, "anilist", "sort:SCORE_DESC", 1, 50, false).unwrap();
+        assert!(get_checkpoint(&c, "anilist", "sort:ID").finished);
+        assert_eq!(get_checkpoint(&c, "anilist", "sort:SCORE_DESC").last_page, 1);
+        assert!(!get_checkpoint(&c, "anilist", "sort:TRENDING_DESC").finished);
+    }
+
+    #[test]
+    fn saving_a_checkpoint_clears_a_previous_error() {
+        // A task that is progressing again must not keep showing the error from
+        // the attempt before it, or the progress page stays red forever.
+        let c = conn();
+        mark_error(&c, "kitsu", "sort:ID", "HTTP 500");
+        assert_eq!(
+            c.query_row(
+                "SELECT last_error FROM sync_state WHERE source = 'kitsu' AND task = 'sort:ID'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "HTTP 500"
+        );
+        save_checkpoint(&c, "kitsu", "sort:ID", 2, 20, false).unwrap();
+        let err: Option<String> = c
+            .query_row(
+                "SELECT last_error FROM sync_state WHERE source = 'kitsu' AND task = 'sort:ID'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn mark_error_truncates_a_huge_message() {
+        // Upstream error strings embed response bodies; the column must not
+        // grow without bound and the UI must not receive a megabyte of HTML.
+        let c = conn();
+        let huge = "e".repeat(5_000);
+        mark_error(&c, "shikimori", "order:rating", &huge);
+        let stored: String = c
+            .query_row(
+                "SELECT last_error FROM sync_state WHERE source = 'shikimori'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.chars().count(), 400);
+    }
+
+    #[test]
+    fn mark_error_creates_the_row_when_the_task_is_new() {
+        let c = conn();
+        mark_error(&c, "anilist", "sort:TITLE_ROMAJI", "boom");
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM sync_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn mark_started_is_idempotent() {
+        let c = conn();
+        mark_started(&c, "anilist").unwrap();
+        mark_started(&c, "anilist").unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM sync_state WHERE task = 'run'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    // --------------------------------------------------------------- fts
+
+    #[test]
+    fn rebuild_fts_indexes_every_title_variant() {
+        let c = conn();
+        insert_anime(&c, "al:1", Some("Shingeki no Kyojin"));
+        c.execute(
+            "UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(rebuild_fts(&c).unwrap(), 1);
+
+        // The whole point of unicode61: a Cyrillic query must find a title that
+        // plain LIKE could never match, because LIKE folds ASCII only.
+        let hit: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM anime_fts WHERE anime_fts MATCH '\"атака\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 1);
+    }
+
+    #[test]
+    fn rebuild_fts_replaces_instead_of_duplicating() {
+        let c = conn();
+        insert_anime(&c, "al:1", Some("One"));
+        rebuild_fts(&c).unwrap();
+        rebuild_fts(&c).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime_fts", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn fts_misses_titles_that_have_no_text_at_all() {
+        // A row with every title NULL must still be indexed (or at least not
+        // break the rebuild) — rows like that exist for id-only imports.
+        let c = conn();
+        insert_anime(&c, "sh:7", None);
+        assert_eq!(rebuild_fts(&c).unwrap(), 1);
+    }
+
+    // ------------------------------------------------------------- schema
+
+    #[test]
+    fn schema_is_idempotent() {
+        // `Db::open` is called once per process, but a second process on the
+        // same file must not fail: every statement is IF NOT EXISTS.
+        let c = conn();
+        apply_schema_on(&c).expect("second apply");
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_keeps_unicode_slugs_unique() {
+        // The unique index on `genres.slug` is what makes genre matching
+        // idempotent, so two different labels that normalise to one slug must
+        // collapse rather than raise.
+        let c = conn();
+        c.execute(
+            "INSERT INTO genres (slug, name_en, created_at) VALUES ('action', 'Action', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO genres (slug, name_en, created_at)
+             VALUES ('action', 'ACTION', 1)
+             ON CONFLICT(slug) DO UPDATE SET name_en = excluded.name_en",
+            [],
+        )
+        .unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM genres", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn count_reads_an_arbitrary_table() {
+        let c = conn();
+        assert_eq!(count(&c, "anime").unwrap(), 0);
+        insert_anime(&c, "al:1", Some("One"));
+        insert_anime(&c, "al:2", Some("Two"));
+        assert_eq!(count(&c, "anime").unwrap(), 2);
+    }
+
+    #[test]
+    fn anime_ids_from_different_sources_cannot_collide() {
+        // The whole reason the primary key is a text uid: v1 used a signed
+        // integer and a Kitsu-only row could land on the number an AniList row
+        // already used.
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, anilist_id, created_at) VALUES ('al:1', 1, 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO anime (uid, kitsu_id, created_at) VALUES ('ks:1', 1, 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(count(&c, "anime").unwrap(), 2);
+    }
+
+    #[test]
+    fn the_same_anilist_id_cannot_be_stored_twice() {
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, anilist_id, created_at) VALUES ('al:1', 42, 1)",
+            [],
+        )
+        .unwrap();
+        let second = c.execute(
+            "INSERT INTO anime (uid, anilist_id, created_at) VALUES ('al:2', 42, 1)",
+            [],
+        );
+        assert!(second.is_err(), "anilist_id is UNIQUE by design");
     }
 }

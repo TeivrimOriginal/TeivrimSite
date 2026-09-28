@@ -523,3 +523,459 @@ pub fn year_bounds(conn: &Connection) -> ApiResult<(Option<i64>, Option<i64>)> {
     )
     .map_err(ApiError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::conn;
+    use rusqlite::params;
+    use serde_json::json;
+
+    fn some(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    // ------------------------------------------------------------- trailers
+
+    #[test]
+    fn a_trailer_url_is_built_for_the_known_sites() {
+        // The stored column is an id; the client needs a link, and each site
+        // spells its watch URL differently.
+        assert_eq!(watch_url("youtube", "abc"), "https://www.youtube.com/watch?v=abc");
+        assert_eq!(watch_url("YouTube", "abc"), "https://www.youtube.com/watch?v=abc");
+        assert_eq!(watch_url("dailymotion", "x1"), "https://www.dailymotion.com/video/x1");
+        assert_eq!(watch_url("twitch", "v1"), "https://www.twitch.tv/videos/v1");
+    }
+
+    #[test]
+    fn an_unknown_trailer_site_does_not_invent_a_link() {
+        // Better a bare site URL than a broken path into someone else's API.
+        assert_eq!(watch_url("weird-host", "abc"), "https://weird-host/");
+    }
+
+    // -------------------------------------------------------------- columns
+
+    #[test]
+    fn parse_string_array_is_total() {
+        assert_eq!(parse_string_array(&some(r#"["a","b"]"#)), vec!["a".to_string(), "b".to_string()]);
+        assert!(parse_string_array(&some("not json")).is_empty());
+        assert!(parse_string_array(&None).is_empty());
+    }
+
+    #[test]
+    fn parse_tags_keeps_the_rank_and_the_spoiler_flag() {
+        let v = parse_tags(&some(
+            r#"[{"name":"Military","rank":80,"isMediaSpoiler":true},{"rank":1},{"name":"X"}]"#,
+        ));
+        assert_eq!(v.len(), 2, "запись без name пропускается");
+        assert_eq!(v[0].name, "Military");
+        assert_eq!(v[0].rank, Some(80));
+        assert_eq!(v[0].spoiler, Some(true));
+        assert_eq!(v[1].name, "X");
+        assert_eq!(v[1].rank, None);
+    }
+
+    #[test]
+    fn parse_tags_survives_a_broken_blob() {
+        // A truncated blob from a crashed import must not blank the section.
+        assert!(parse_tags(&some("{broken")).is_empty());
+        assert!(parse_tags(&None).is_empty());
+    }
+
+    #[test]
+    fn parse_named_accepts_objects_and_bare_strings() {
+        // Studios arrive as objects from two sources and as plain strings from
+        // a third; both shapes are in the wild.
+        let v = parse_named(&some(r#"[{"name":"Wit Studio","name_ru":"Wit","isAnimationStudio":true},"MAPPA"]"#));
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].name, "Wit Studio");
+        assert_eq!(v[0].name_ru.as_deref(), Some("Wit"));
+        assert_eq!(v[0].is_main, Some(true));
+        assert_eq!(v[1].name, "MAPPA");
+        assert_eq!(v[1].name_ru, None);
+    }
+
+    #[test]
+    fn parse_age_rating_prefers_the_guide_and_falls_back() {
+        // The guide is human readable; the raw code is a fallback for records
+        // that only carry it.
+        assert_eq!(
+            parse_age_rating(&some(r#"{"ageRating":"R17+","ageRatingGuide":"17+"}"#)).as_deref(),
+            Some("17+")
+        );
+        assert_eq!(
+            parse_age_rating(&some(r#"{"ageRating":"R17+"}"#)).as_deref(),
+            Some("R17+")
+        );
+        assert_eq!(parse_age_rating(&some("{}")), None);
+        assert_eq!(parse_age_rating(&None), None);
+    }
+
+    // ------------------------------------------------------------ relations
+
+    #[test]
+    fn relations_lose_their_underscores_and_gain_an_uid() {
+        // The client links to /anime/<uid>, and the raw `PREQUEL` reads badly
+        // in a filter chip, so it is humanised.
+        let v = parse_relations(&some(
+            r#"[{"relationType":"PREQUEL","id":11061,"title":{"romaji":"Kaban"},"format":"MOVIE","status":"FINISHED","cover":"c.jpg"}]"#,
+        ));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].relation, "prequel");
+        assert_eq!(v[0].uid, "al:11061");
+        assert_eq!(v[0].title, "Kaban");
+        assert_eq!(v[0].format.as_deref(), Some("MOVIE"));
+        assert_eq!(v[0].cover.as_deref(), Some("c.jpg"));
+    }
+
+    #[test]
+    fn a_relation_without_a_type_is_still_rendered() {
+        let v = parse_relations(&some(r#"[{"id":1,"title":"X"}]"#));
+        assert_eq!(v[0].relation, "related");
+    }
+
+    #[test]
+    fn a_relation_without_an_id_is_dropped() {
+        // There is no uid to link to without the id.
+        assert!(parse_relations(&some(r#"[{"relationType":"PREQUEL","title":"X"}]"#)).is_empty());
+    }
+
+    #[test]
+    fn title_from_value_tries_every_locale_in_order() {
+        assert_eq!(title_from_value(&json!("Прямая строка")), "Прямая строка");
+        assert_eq!(title_from_value(&json!({ "russian": "RU" })), "RU");
+        assert_eq!(title_from_value(&json!({ "romaji": "RJ" })), "RJ");
+        assert_eq!(title_from_value(&json!({ "english": "EN" })), "EN");
+        assert_eq!(title_from_value(&json!({ "native": "NA" })), "NA");
+        assert_eq!(title_from_value(&json!({})), "Без названия");
+        // An empty string is skipped, not shown as a blank title.
+        assert_eq!(title_from_value(&json!({ "russian": "", "romaji": "RJ" })), "RJ");
+    }
+
+    // ------------------------------------------------------------- the rest
+
+    #[test]
+    fn only_http_links_reach_the_client() {
+        // These URLs are rendered as href. `javascript:` on a page that also
+        // holds a token is not a risk worth taking.
+        let v = parse_external_links(&some(
+            r#"[{"url":"https://a.example/1","site":"MAL","type":"X"},{"url":"http://b.example/2"},{"url":"javascript:alert(1)"},{"url":"data:text/html,x"},{"site":"no-url"}]"#,
+        ));
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].site, "MAL");
+        assert_eq!(v[0].kind.as_deref(), Some("X"));
+        assert_eq!(v[1].site, "link");
+    }
+
+    #[test]
+    fn only_http_streaming_links_reach_the_client() {
+        let v = parse_streaming(&some(
+            r#"[{"url":"https://v.example/1","site":"youtube","title":"Ep 1","thumbnail":"t.jpg"},{"url":"javascript:x"}]"#,
+        ));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].site, "youtube");
+        assert_eq!(v[0].title.as_deref(), Some("Ep 1"));
+        assert_eq!(v[0].thumbnail.as_deref(), Some("t.jpg"));
+    }
+
+    #[test]
+    fn a_streaming_link_without_a_site_gets_a_default() {
+        let v = parse_streaming(&some(r#"[{"url":"https://v.example/1"}]"#));
+        assert_eq!(v[0].site, "watch");
+    }
+
+    #[test]
+    fn recommendations_get_their_uid_and_title() {
+        let v = parse_recommendations(&some(
+            r#"[{"id":127230,"rating":95,"title":{"romaji":"Gingitsune"},"format":"TV_SHORT","cover":"c.jpg"},{"rating":1}]"#,
+        ));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].uid, "al:127230");
+        assert_eq!(v[0].title, "Gingitsune");
+        assert_eq!(v[0].rating, Some(95));
+    }
+
+    #[test]
+    fn characters_prefer_the_japanese_voice_actor() {
+        let v = parse_people(
+            &some(
+                r#"[{"role":"Main","character":{"name":"Eren","image":{"large":"e.jpg"}},
+                     "voiceActors":[{"id":"1","language":"English","name":"VA EN"},
+                                    {"id":"2","language":"Japanese","name":"VA JP"}]},
+                    {"role":"X","character":{"name":""}}]"#,
+            ),
+            true,
+        );
+        assert_eq!(v.len(), 1, "персонаж без имени пропускается");
+        assert_eq!(v[0].name, "Eren");
+        assert_eq!(v[0].image.as_deref(), Some("e.jpg"));
+        assert_eq!(v[0].role.as_deref(), Some("Main"));
+        assert_eq!(v[0].voice_actor.as_deref(), Some("VA JP"));
+    }
+
+    #[test]
+    fn a_character_with_only_a_foreign_voice_actor_still_gets_one() {
+        let v = parse_people(
+            &some(
+                r#"[{"character":{"name":"Eren"},"voiceActors":[{"id":"1","language":"English","name":"VA EN"}]}]"#,
+            ),
+            true,
+        );
+        assert_eq!(v[0].voice_actor.as_deref(), Some("VA EN"));
+    }
+
+    #[test]
+    fn staff_carry_positions_and_never_a_voice_actor() {
+        let v = parse_people(
+            &some(
+                r#"[{"person":{"name":"Sasha","image":{"large":"s.jpg"}},"positions":["Director","Story"]},
+                    {"person":{"name":""}}]"#,
+            ),
+            false,
+        );
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name, "Sasha");
+        assert_eq!(v[0].voice_actor, None);
+        assert_eq!(v[0].positions, Some(vec!["Director".to_string(), "Story".to_string()]));
+    }
+
+    // ------------------------------------------------------- whole-row dump
+
+    #[test]
+    fn raw_row_parses_the_json_columns_back_into_objects() {
+        // The raw endpoint is a debugging aid; leaving `genres_json` as a
+        // string inside JSON is exactly the confusion it exists to remove.
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, title_romaji, genres_json, start_year, is_adult, created_at)
+             VALUES ('al:1', 'X', '[\"Action\"]', 2013, 0, 1)",
+            [],
+        )
+        .unwrap();
+        let v = raw_row(&c, "al:1").unwrap().unwrap();
+        assert_eq!(v["uid"], json!("al:1"));
+        assert_eq!(v["genres_json"], json!(["Action"]));
+        assert_eq!(v["start_year"], json!(2013));
+        assert_eq!(v["is_adult"], json!(0));
+    }
+
+    #[test]
+    fn raw_row_of_a_missing_uid_is_none() {
+        let c = conn();
+        assert!(raw_row(&c, "al:nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn raw_row_keeps_a_broken_json_column_as_a_string() {
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, genres_json, created_at) VALUES ('al:1', '{broken', 1)",
+            [],
+        )
+        .unwrap();
+        let v = raw_row(&c, "al:1").unwrap().unwrap();
+        assert_eq!(v["genres_json"], json!("{broken"));
+    }
+
+    // ---------------------------------------------------------- filter lists
+
+    #[test]
+    fn distinct_values_skips_nulls_and_blanks_and_sorts() {
+        let c = conn();
+        for (uid, format) in [("al:1", "TV"), ("al:2", "MOVIE"), ("al:3", ""), ("al:4", "TV")] {
+            let f: Option<&str> = if format.is_empty() { None } else { Some(format) };
+            c.execute(
+                "INSERT INTO anime (uid, format, created_at) VALUES (?1, ?2, 1)",
+                params![uid, f],
+            )
+            .unwrap();
+        }
+        let v = distinct_values(&c, "format").unwrap();
+        assert_eq!(v, vec!["MOVIE".to_string(), "TV".to_string()]);
+    }
+
+    #[test]
+    fn year_bounds_ignore_yearless_titles() {
+        let c = conn();
+        c.execute("INSERT INTO anime (uid, start_year, created_at) VALUES ('al:1', 2013, 1)", [])
+            .unwrap();
+        c.execute("INSERT INTO anime (uid, start_year, created_at) VALUES ('al:2', 2003, 1)", [])
+            .unwrap();
+        c.execute("INSERT INTO anime (uid, created_at) VALUES ('al:3', 1)", []).unwrap();
+        assert_eq!(year_bounds(&c).unwrap(), (Some(2003), Some(2013)));
+    }
+
+    #[test]
+    fn year_bounds_of_an_empty_catalogue_are_both_null() {
+        // The filter sheet has to render "any year" rather than 0..0.
+        assert_eq!(year_bounds(&conn()).unwrap(), (None, None));
+    }
+
+    // --------------------------------------------------------- the detail row
+
+    fn seeded(conn: &Connection) {
+        // A raw string on purpose: the SQL carries JSON, and SQLite has no
+        // backslash escapes, so `\"` inside a single-quoted literal would be
+        // stored verbatim and the blob would stop parsing as JSON.
+        conn.execute(
+            r#"INSERT INTO anime (
+                uid, anilist_id, kitsu_id, shikimori_id, mal_id,
+                title_romaji, title_english, title_russian, alt_titles,
+                format, status, description, description_ru,
+                duration, episodes, country_of_origin, is_adult, is_licensed,
+                season, season_year, start_date, score, score_source, popularity,
+                cover_small, cover_medium, cover_large, cover_color, banner,
+                trailer_id, trailer_site, trailer_thumbnail,
+                genres_json, tags_json, studios_json, classifications_json,
+                relations_json, external_links_json, streaming_json,
+                recommendations_json, characters_json, staff_json, updated_at
+             ) VALUES (
+                'al:16498', 16498, 12, 16498, 20,
+                'Shingeki no Kyojin', 'Attack on Titan', 'Атака Титанов', '["AoT"]',
+                'TV', 'FINISHED', 'desc', 'описание',
+                24, 25, 'JP', 0, 1,
+                'SPRING', 2013, '2013-04-07', 84, 'anilist', 12345,
+                's.jpg', 'm.jpg', 'xl.jpg', '#8f9494', 'b.jpg',
+                'abc', 'youtube', 'th.jpg',
+                '["Action"]', '[{"name":"Military"}]', '[{"name":"Wit Studio"}]',
+                '{"ageRatingGuide":"17+"}',
+                '[{"relationType":"PREQUEL","id":11061,"title":{"romaji":"Kaban"}}]',
+                '[{"url":"https://myanimelist.net/anime/20","site":"MAL"}]',
+                '[{"url":"https://anilist.co/watch/1","site":"anilist"}]',
+                '[{"id":127230,"rating":95,"title":{"romaji":"Gingitsune"}}]',
+                '[{"role":"Main","character":{"name":"Eren"},"voiceActors":[{"language":"Japanese","name":"VA JP"}]}]',
+                '[{"person":{"name":"Sasha"},"positions":["Director"]}]',
+                42
+             )"#,
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn load_detail_maps_every_section() {
+        let c = conn();
+        seeded(&c);
+        let d = load_detail(&c, "al:16498", false, None).unwrap();
+
+        assert_eq!(d.uid, "al:16498");
+        assert_eq!(d.ids.anilist, Some(16498));
+        assert_eq!(d.ids.kitsu, Some(12));
+        assert_eq!(d.ids.shikimori, Some(16498));
+        assert_eq!(d.ids.mal, Some(20));
+        assert_eq!(d.title_russian.as_deref(), Some("Атака Титанов"));
+        assert_eq!(d.format.as_deref(), Some("TV"));
+        assert!(!d.is_adult);
+        assert_eq!(d.is_licensed, Some(true));
+        assert_eq!(d.score, Some(84));
+        assert_eq!(d.start_date.as_deref(), Some("2013-04-07"));
+        assert_eq!(d.cover_large.as_deref(), Some("xl.jpg"));
+        assert_eq!(d.cover_color.as_deref(), Some("#8f9494"));
+        assert_eq!(d.updated_at, Some(42));
+
+        assert_eq!(d.trailer.as_ref().unwrap().url, "https://www.youtube.com/watch?v=abc");
+        assert_eq!(d.genres[0].name, "Action");
+        assert_eq!(d.tags[0].name, "Military");
+        assert_eq!(d.studios[0].name, "Wit Studio");
+        assert_eq!(d.age_rating.as_deref(), Some("17+"));
+        assert_eq!(d.relations[0].uid, "al:11061");
+        assert_eq!(d.external_links[0].site, "MAL");
+        assert_eq!(d.streaming[0].site, "anilist");
+        assert_eq!(d.recommendations[0].uid, "al:127230");
+        assert_eq!(d.characters[0].name, "Eren");
+        assert_eq!(d.characters[0].voice_actor.as_deref(), Some("VA JP"));
+        assert_eq!(d.staff[0].name, "Sasha");
+    }
+
+    #[test]
+    fn synonyms_include_every_stored_title() {
+        // Search results link to the detail page, and the client looks the
+        // other name up in `synonyms` to highlight it.
+        let c = conn();
+        seeded(&c);
+        let d = load_detail(&c, "al:16498", false, None).unwrap();
+        assert!(d.synonyms.contains(&"AoT".to_string()));
+        assert!(d.synonyms.contains(&"Shingeki no Kyojin".to_string()));
+        assert!(d.synonyms.contains(&"Attack on Titan".to_string()));
+        assert!(d.synonyms.contains(&"Атака Титанов".to_string()));
+        assert_eq!(
+            d.synonyms.iter().filter(|s| *s == "AoT").count(),
+            1,
+            "дубликат в alt_titles не должен дублироваться в synonyms"
+        );
+    }
+
+    #[test]
+    fn the_genre_dictionary_wins_over_the_stored_array() {
+        // The curated table carries ids and Russian names, which the raw array
+        // does not; the detail page shows the Russian label.
+        let c = conn();
+        seeded(&c);
+        c.execute(
+            "INSERT INTO genres (slug, name_en, name_ru, category) VALUES ('action', 'Action', 'Боевик', 'genre')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO anime_genres (uid, genre_id, source) SELECT 'al:16498', id, 'anilist' FROM genres WHERE slug = 'action'",
+            [],
+        )
+        .unwrap();
+        let d = load_detail(&c, "al:16498", false, None).unwrap();
+        assert_eq!(d.genres.len(), 1);
+        assert_eq!(d.genres[0].name_ru.as_deref(), Some("Боевик"));
+        assert!(d.genres[0].id > 0);
+    }
+
+    #[test]
+    fn a_row_with_no_dictionary_entries_falls_back_to_the_stored_array() {
+        // The genre matcher runs at the end of a sync; until then the detail
+        // page must still show something.
+        let c = conn();
+        seeded(&c);
+        let d = load_detail(&c, "al:16498", false, None).unwrap();
+        assert_eq!(d.genres[0].name, "Action");
+        assert_eq!(d.genres[0].id, 0);
+    }
+
+    #[test]
+    fn an_unknown_uid_is_a_not_found() {
+        let c = conn();
+        match load_detail(&c, "al:nope", false, None) {
+            Err(ApiError::NotFound(_)) => {}
+            Err(other) => panic!("неверная ошибка: {}", other),
+            Ok(_) => panic!("ожидался NotFound, а строка вернулась"),
+        }
+    }
+
+    #[test]
+    fn the_library_entry_is_attached_only_for_a_signed_in_user() {
+        let c = conn();
+        seeded(&c);
+        c.execute("INSERT INTO users (username, username_key, password_hash, created_at) VALUES ('u','u','h',1)", [])
+            .unwrap();
+        c.execute(
+            "INSERT INTO favorites (user_id, uid, status, is_favorite, score, created_at, updated_at)
+             SELECT id, 'al:16498', 'watching', 1, 9, 1, 42 FROM users",
+            [],
+        )
+        .unwrap();
+        let uid: i64 = c.query_row("SELECT id FROM users", [], |r| r.get(0)).unwrap();
+
+        let anonymous = load_detail(&c, "al:16498", false, None).unwrap();
+        assert!(anonymous.library.is_none());
+
+        let mine = load_detail(&c, "al:16498", false, Some(uid)).unwrap();
+        let lib = mine.library.as_ref().unwrap();
+        assert_eq!(lib.status, "watching");
+        assert!(lib.is_favorite);
+        assert_eq!(lib.score, Some(9));
+        assert_eq!(lib.uid, "al:16498");
+    }
+
+    #[test]
+    fn load_library_entry_of_a_row_not_in_the_list_is_none() {
+        let c = conn();
+        assert!(load_library_entry(&c, 1, "al:1").unwrap().is_none());
+    }
+}

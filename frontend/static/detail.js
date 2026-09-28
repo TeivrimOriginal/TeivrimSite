@@ -219,7 +219,10 @@
                     href: l.url,
                     target: '_blank',
                     rel: 'noopener noreferrer',
-                    text: l.site + (l.kind ? ' · ' + l.kind : ''),
+                    // The field is called `type` on the wire: the struct field is
+                    // `kind`, and it is renamed on serialisation to match the
+                    // source vocabulary. Reading `l.kind` silently dropped it.
+                    text: l.site + (l.type ? ' · ' + l.type : ''),
                 })
             ))));
         }

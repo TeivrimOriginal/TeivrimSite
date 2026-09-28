@@ -148,3 +148,102 @@ pub fn reconcile_on_boot(conn: &Connection) {
         crate::error::log_warn(&format!("[sync] не удалось пометить прерванные задачи: {}", e));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::conn;
+    use actix_web::test::TestRequest;
+
+    fn authorized_with(token: Option<&str>, admin: Option<&str>) -> bool {
+        let req = TestRequest::default();
+        let req = match token {
+            Some(t) => req.insert_header(("x-admin-token", t)),
+            None => req,
+        };
+        authorized(&req.to_http_request(), admin)
+    }
+
+    #[test]
+    fn a_matching_admin_token_is_accepted() {
+        assert!(authorized_with(Some("s3cret"), Some("s3cret")));
+    }
+
+    #[test]
+    fn a_wrong_admin_token_is_refused() {
+        assert!(!authorized_with(Some("s3crey"), Some("s3cret")));
+        assert!(!authorized_with(Some(""), Some("s3cret")));
+        assert!(!authorized_with(Some("s3cret "), Some("s3cret")));
+    }
+
+    #[test]
+    fn a_token_of_a_different_length_is_refused_without_a_comparison() {
+        // The length check runs first, so the response time cannot be used to
+        // recover the token one byte at a time.
+        assert!(!authorized_with(Some("s3cre"), Some("s3cret")));
+        assert!(!authorized_with(Some("s3crets"), Some("s3cret")));
+    }
+
+    #[test]
+    fn no_header_means_no_access() {
+        assert!(!authorized_with(None, Some("s3cret")));
+    }
+
+    #[test]
+    fn an_unconfigured_admin_token_denies_everything() {
+        // With no SYNC_ADMIN_TOKEN the endpoints must not fall open; an
+        // attacker who finds the route would otherwise be able to start a
+        // multi-hour import.
+        assert!(!authorized_with(Some(""), None));
+        assert!(!authorized_with(Some("anything"), None));
+    }
+
+    #[test]
+    fn a_bearer_token_is_accepted_as_a_fallback() {
+        // A signed-in operator should not have to keep a second secret around.
+        let req = TestRequest::default()
+            .insert_header(("authorization", "Bearer s3cret"))
+            .to_http_request();
+        assert!(authorized(&req, Some("s3cret")));
+
+        let req = TestRequest::default()
+            .insert_header(("authorization", "Basic s3cret"))
+            .to_http_request();
+        assert!(!authorized(&req, Some("s3cret")));
+    }
+
+    // ------------------------------------------------------ boot reconcile
+
+    #[test]
+    fn an_unfinished_task_is_marked_as_interrupted_on_boot() {
+        // Otherwise a crash mid-import looks like a sync that is still
+        // progressing, and nobody restarts it.
+        let c = conn();
+        crate::db::save_checkpoint(&c, "anilist", "sort:ID", 12, 600, false).unwrap();
+        crate::db::save_checkpoint(&c, "kitsu", "sort:ID", 30, 1500, true).unwrap();
+
+        reconcile_on_boot(&c);
+        let open: Option<String> = c
+            .query_row(
+                "SELECT last_error FROM sync_state WHERE source = 'anilist'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open.as_deref(), Some("процесс был перезапущен"));
+
+        let done: Option<String> = c
+            .query_row(
+                "SELECT last_error FROM sync_state WHERE source = 'kitsu'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(done.is_none(), "завершённая задача не должна выглядеть сломанной");
+    }
+
+    #[test]
+    fn reconcile_on_an_empty_database_does_nothing() {
+        reconcile_on_boot(&conn());
+    }
+}

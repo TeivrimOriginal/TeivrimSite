@@ -130,10 +130,18 @@ fn etag_of(meta: &std::fs::Metadata) -> String {
 /// branch below becomes the right one for them and this can be narrowed.
 fn cache_for(path: &Path) -> &'static str {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if name.contains('.') {
-        let stem = name.split('.').next().unwrap_or("");
-        // Fingerprinted (e.g. app.a1b2c3.js) — safe to cache for a year.
-        if stem.chars().any(|c| c.is_ascii_digit()) && name.contains('.') && name.rsplit('.').count() >= 3 {
+    // Fingerprinted (e.g. app.a1b2c3.js) — safe to cache for a year.
+    //
+    // The fingerprint is the segment *before* the extension. An earlier version
+    // tested the first segment instead, so `app.a1b2c3.js` never looked
+    // fingerprinted (`app` has no digits) and every hashed asset was served
+    // with `no-cache` — the exact outcome this function exists to avoid.
+    let parts: Vec<&str> = name.split('.').collect();
+    if let Some(fp) = parts.len().checked_sub(2).map(|i| parts[i]) {
+        let looks_like_a_hash = fp.len() >= 6
+            && fp.chars().any(|c| c.is_ascii_digit())
+            && fp.chars().all(|c| c.is_ascii_alphanumeric());
+        if looks_like_a_hash {
             return "public, max-age=31536000, immutable";
         }
     }
@@ -211,5 +219,312 @@ fn parse_httpdate(s: &str) -> Option<u64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
     Some((days * 86_400 + h * 3600 + mi * 60 + se) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::http::StatusCode;
+    use actix_web::test::TestRequest;
+
+    fn root() -> &'static Path {
+        Path::new("/srv/frontend")
+    }
+
+    // ------------------------------------------------------------ traversal
+
+    #[test]
+    fn a_plain_relative_path_resolves_under_the_root() {
+        let p = resolve(root(), "static/app.js").unwrap();
+        assert_eq!(p, Path::new("/srv/frontend/static/app.js"));
+    }
+
+    #[test]
+    fn a_leading_slash_is_not_a_component() {
+        // The URL path always starts with '/', and treating it as absolute
+        // would make every asset 404.
+        assert_eq!(
+            resolve(root(), "/index.html").unwrap(),
+            Path::new("/srv/frontend/index.html")
+        );
+    }
+
+    #[test]
+    fn percent_escapes_are_decoded() {
+        // A Russian filename arrives percent-encoded and must not be looked up
+        // under its escaped name.
+        assert_eq!(
+            resolve(root(), "static/%D0%BA%D0%B0%D1%82.html").unwrap(),
+            Path::new("/srv/frontend/static/кат.html")
+        );
+    }
+
+    #[test]
+    fn a_parent_component_is_refused() {
+        // The whole point of the hand-written resolver: `..` is rejected, not
+        // cleaned and then checked against a prefix.
+        assert!(resolve(root(), "../secrets.txt").is_none());
+        assert!(resolve(root(), "static/../../etc/passwd").is_none());
+        assert!(resolve(root(), "a/b/../../../c").is_none());
+    }
+
+    #[test]
+    fn an_encoded_parent_component_is_refused_too() {
+        // Decoding happens before the component walk, so `%2e%2e` is just as
+        // dangerous as `..` — and must be treated the same way.
+        assert!(resolve(root(), "%2e%2e/secrets.txt").is_none());
+        assert!(resolve(root(), "static/%2E%2E/%2E%2E/secret").is_none());
+    }
+
+    #[test]
+    fn a_current_directory_component_is_ignored() {
+        assert_eq!(
+            resolve(root(), "./index.html").unwrap(),
+            Path::new("/srv/frontend/index.html")
+        );
+    }
+
+    #[test]
+    fn the_root_itself_is_not_a_file() {
+        // Returning the directory would let a directory listing out of a
+        // handler that only knows how to read a file.
+        assert!(resolve(root(), "").is_none());
+        assert!(resolve(root(), "/").is_none());
+        assert!(resolve(root(), ".").is_none());
+    }
+
+    #[test]
+    fn a_sibling_with_a_shared_prefix_is_not_reachable() {
+        // `/srv/app-secrets` starts with `/srv/app`, which is exactly the
+        // mistake a string-prefix check makes.
+        let p = resolve(Path::new("/srv/app"), "static/x.js").unwrap();
+        assert_eq!(p, Path::new("/srv/app/static/x.js"));
+        assert_ne!(p, Path::new("/srv/app-secrets/static/x.js"));
+    }
+
+    #[test]
+    fn an_invalid_percent_sequence_is_refused() {
+        // `%zz` is not a valid escape and is passed through as text, so it
+        // resolves to a file that simply does not exist. A byte that is not
+        // valid UTF-8 is what actually gets rejected.
+        assert!(resolve(root(), "static/%FF.js").is_none());
+    }
+
+    // --------------------------------------------------------------- dates
+
+    #[test]
+    fn httpdate_renders_the_imf_fixdate() {
+        // The only format Last-Modified accepts; anything else is a 400 from
+        // the browser's cache.
+        let t = UNIX_EPOCH + std::time::Duration::from_secs(784_111_777);
+        assert_eq!(httpdate(&t), "Sun, 06 Nov 1994 08:49:37 GMT");
+    }
+
+    #[test]
+    fn httpdate_of_the_epoch() {
+        assert_eq!(httpdate(&UNIX_EPOCH), "Thu, 01 Jan 1970 00:00:00 GMT");
+    }
+
+    #[test]
+    fn httpdate_handles_a_leap_day() {
+        // The civil-from-days conversion has to know February can be 29 days
+        // long, or every leap year is off by one.
+        let t = UNIX_EPOCH + std::time::Duration::from_secs(1_709_164_800);
+        assert_eq!(httpdate(&t), "Thu, 29 Feb 2024 00:00:00 GMT");
+    }
+
+    #[test]
+    fn parse_httpdate_reads_what_httpdate_wrote() {
+        // The two must be exact inverses, or every conditional request
+        // mismatches and the file is re-downloaded every time.
+        for secs in [0u64, 784_111_777, 1_709_164_800, 1_900_000_000] {
+            let t = UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            let s = httpdate(&t);
+            assert_eq!(parse_httpdate(&s), Some(secs), "дата {}", s);
+        }
+    }
+
+    #[test]
+    fn parse_httpdate_rejects_nonsense() {
+        for s in [
+            "",
+            "not a date",
+            "Sun 06 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994",
+            "Sun, 06 Xxx 1994 08:49:37 GMT",
+            "Sun, 06 Nov",
+        ] {
+            assert_eq!(parse_httpdate(s), None, "дата {:?} разобралась", s);
+        }
+    }
+
+    // -------------------------------------------------------- cache policy
+
+    #[test]
+    fn a_plain_asset_is_revalidated_every_time() {
+        // Nothing in frontend/static is content-hashed, so a long max-age
+        // would keep serving yesterday's bundle after a deploy.
+        assert_eq!(cache_for(Path::new("/srv/f/static/app.js")), "public, no-cache");
+        assert_eq!(cache_for(Path::new("/srv/f/index.html")), "public, no-cache");
+    }
+
+    #[test]
+    fn a_fingerprinted_asset_is_immutable() {
+        // The hash is the segment before the extension, not the first one.
+        assert_eq!(
+            cache_for(Path::new("/srv/f/static/app.a1b2c3.js")),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_for(Path::new("/srv/f/static/vendor.1a2b3c4d.css")),
+            "public, max-age=31536000, immutable"
+        );
+    }
+
+    #[test]
+    fn an_unhashed_multi_dot_name_is_still_revalidated() {
+        // `main.min.js` and `jquery-3.6.0.min.js` are not fingerprinted, and
+        // caching them for a year would keep a stale bundle alive after a
+        // deploy.
+        assert_eq!(cache_for(Path::new("/srv/f/static/main.min.js")), "public, no-cache");
+        assert_eq!(
+            cache_for(Path::new("/srv/f/static/jquery-3.6.0.min.js")),
+            "public, no-cache"
+        );
+        assert_eq!(cache_for(Path::new("/srv/f/static/2.js")), "public, no-cache");
+    }
+
+    #[test]
+    fn cache_for_never_panics_on_a_nameless_path() {
+        assert_eq!(cache_for(Path::new("/")), "public, no-cache");
+        assert_eq!(cache_for(Path::new("")), "public, no-cache");
+    }
+
+    // ------------------------------------------------------------- etags
+
+    #[test]
+    fn an_if_none_match_that_does_not_match_is_not_a_hit() {
+        let req = TestRequest::default()
+            .insert_header((header::IF_NONE_MATCH, "\"deadbeef-1\""))
+            .to_http_request();
+        assert!(!etag_matches(&req, "\"cafe-2\""));
+    }
+
+    #[test]
+    fn a_star_always_matches() {
+        let req = TestRequest::default()
+            .insert_header((header::IF_NONE_MATCH, "*"))
+            .to_http_request();
+        assert!(etag_matches(&req, "\"cafe-2\""));
+    }
+
+    #[test]
+    fn a_weak_comparison_matches() {
+        // `W/` marks a semantically equal body; a weak comparison is what a
+        // browser cache needs.
+        let req = TestRequest::default()
+            .insert_header((header::IF_NONE_MATCH, "W/\"cafe-2\""))
+            .to_http_request();
+        assert!(etag_matches(&req, "\"cafe-2\""));
+    }
+
+    #[test]
+    fn one_matching_tag_among_several_is_a_hit() {
+        let req = TestRequest::default()
+            .insert_header((header::IF_NONE_MATCH, "\"other-1\", \"cafe-2\""))
+            .to_http_request();
+        assert!(etag_matches(&req, "\"cafe-2\""));
+    }
+
+    #[test]
+    fn a_request_without_the_header_is_a_miss() {
+        let req = TestRequest::default().to_http_request();
+        assert!(!etag_matches(&req, "\"cafe-2\""));
+    }
+
+    // ------------------------------------------------------ serving a file
+
+    #[tokio::test]
+    async fn a_missing_file_is_a_plain_404() {
+        let req = TestRequest::default().to_http_request();
+        let res = serve(&req, Path::new("/definitely/not/here"), "index.html").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_traversal_attempt_is_a_404_and_not_a_read() {
+        let req = TestRequest::default().to_http_request();
+        let res = serve(&req, root(), "../../../etc/passwd").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_directory_is_not_served() {
+        let req = TestRequest::default().to_http_request();
+        let res = serve(&req, Path::new("."), "src").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_real_file_is_served_with_its_type_cache_headers_and_etag() {
+        // The four things the frontend depends on: a content type the browser
+        // will render, a cache policy, a validator, and a body.
+        let dir = std::env::temp_dir().join(format!("anime-static-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("app.js");
+        std::fs::write(&file, b"console.log(1)").unwrap();
+
+        let req = TestRequest::default().to_http_request();
+        let res = serve(&req, &dir, "app.js").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let ctype = res.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+        assert!(ctype.contains("javascript"), "content-type: {}", ctype);
+        assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), "public, no-cache");
+        let etag = res.headers().get(header::ETAG).unwrap().to_str().unwrap().to_string();
+        assert!(etag.starts_with('"') && etag.ends_with('"'), "etag: {}", etag);
+        assert!(res.headers().get(header::LAST_MODIFIED).is_some());
+
+        // The same validator turns the next request into a 304 with no body.
+        let req = TestRequest::default()
+            .insert_header((header::IF_NONE_MATCH, etag))
+            .to_http_request();
+        let res = serve(&req, &dir, "app.js").await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_percent_encoded_request_reaches_a_cyrillic_file() {
+        let dir = std::env::temp_dir().join(format!("anime-static-ru-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("каталог.txt"), b"ok").unwrap();
+
+        let req = TestRequest::default().to_http_request();
+        let res = serve(
+            &req,
+            &dir,
+            "%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3.txt",
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_modified_since_in_the_past_still_serves_the_body() {
+        let dir = std::env::temp_dir().join(format!("anime-static-dt-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("a.txt"), b"ok").unwrap();
+
+        let req = TestRequest::default()
+            .insert_header((header::IF_MODIFIED_SINCE, "Sun, 06 Nov 1994 08:49:37 GMT"))
+            .to_http_request();
+        let res = serve(&req, &dir, "a.txt").await;
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 

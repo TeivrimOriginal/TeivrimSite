@@ -78,3 +78,91 @@ impl Limiter {
     }
 
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_up_to_the_budget_are_allowed() {
+        let l = Limiter::new(600);
+        for i in 0..5 {
+            assert!(l.check_n("1.2.3.4", 5).allowed, "запрос {}", i);
+        }
+    }
+
+    #[test]
+    fn the_request_after_the_budget_is_refused() {
+        let l = Limiter::new(600);
+        for _ in 0..5 {
+            l.check_n("1.2.3.4", 5);
+        }
+        let d = l.check_n("1.2.3.4", 5);
+        assert!(!d.allowed);
+        // `retry_after` has to be at least a second or a client would spin.
+        assert!(d.retry_after >= 1);
+    }
+
+    #[test]
+    fn a_refused_request_does_not_extend_the_window() {
+        // Counting refusals would make a single client keep itself locked out
+        // long after the window it burned is over.
+        let l = Limiter::new(600);
+        for _ in 0..20 {
+            l.check_n("k", 5);
+        }
+        let first = l.check_n("k", 5).retry_after;
+        let second = l.check_n("k", 5).retry_after;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn keys_are_counted_separately() {
+        // One user hammering the login form must not lock out the rest of the
+        // building.
+        let l = Limiter::new(600);
+        for _ in 0..5 {
+            l.check_n("a", 5);
+        }
+        assert!(!l.check_n("a", 5).allowed);
+        assert!(l.check_n("b", 5).allowed);
+    }
+
+    #[test]
+    fn two_endpoints_can_share_one_limiter_with_different_budgets() {
+        // Auth is strict and the image proxy is generous, and both are served
+        // by the same instance.
+        let l = Limiter::new(600);
+        for _ in 0..10 {
+            assert!(l.check_n("k", 10).allowed);
+        }
+        assert!(!l.check_n("k", 10).allowed);
+        // The looser budget is separate accounting, not a reset.
+        let l2 = Limiter::new(60);
+        for _ in 0..10 {
+            assert!(l2.check_n("k", 10).allowed);
+        }
+        assert!(!l2.check_n("k", 10).allowed);
+        assert!(l2.check_n("k", 240).allowed);
+    }
+
+    #[test]
+    fn a_zero_budget_refuses_everything() {
+        // A deployment that switched an endpoint off should get 429, not an
+        // open door.
+        let l = Limiter::new(600);
+        assert!(!l.check_n("k", 0).allowed);
+    }
+
+    #[test]
+    fn a_spoofed_forwarded_for_cannot_grow_the_map_without_bound() {
+        // The sweep only runs above the cap and drops what has aged out; what
+        // matters is that the map does not grow without limit.
+        let l = Limiter::new(1);
+        for i in 0..30_000 {
+            l.check_n(&format!("10.0.0.{}", i % 65536), 5);
+        }
+        let map = l.buckets.lock().unwrap();
+        assert!(map.len() <= 20_000, "карта выросла до {}", map.len());
+    }
+}

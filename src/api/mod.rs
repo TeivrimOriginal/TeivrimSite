@@ -73,3 +73,450 @@ async fn preflight(cors: crate::http::cors::Cors, req: HttpRequest) -> HttpRespo
     }
     builder.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::test_db;
+    use actix_web::body::to_bytes;
+    use actix_web::dev::ServiceResponse;
+    use actix_web::http::StatusCode;
+    use actix_web::test;
+    use actix_web::App;
+    use serde_json::Value;
+
+    /// The same wiring `main` does, minus the loaders: a route that resolves
+    /// here is a route that exists in the real server.
+    ///
+    /// A macro rather than a function because `init_service` hands back
+    /// `impl Service<Request, ...>` and `actix_http` is not a direct dependency,
+    /// so the return type cannot be written out.
+    macro_rules! app {
+        ($db:expr) => {
+            test::init_service(
+                App::new()
+                    .app_data(web::Data::new($db.handle.clone()))
+                    .app_data(web::Data::new(Some(String::from("admin-token"))))
+                    .app_data(web::Data::new(crate::api::images::ImageCache::default()))
+                    .app_data(web::Data::new(crate::http::ratelimit::Limiter::new(600)))
+                    .app_data(web::Data::new(crate::http::ratelimit::Limiter::new(60)))
+                    .configure(|cfg| configure(cfg, 100, &["*".to_string()])),
+            )
+            .await
+        };
+    }
+
+    async fn body_json<B>(res: ServiceResponse<B>) -> Value
+    where
+        B: actix_web::body::MessageBody,
+        B::Error: std::fmt::Display,
+    {
+        let bytes = match to_bytes(res.into_body()).await {
+            Ok(b) => b,
+            Err(e) => panic!("не удалось прочитать тело ответа: {}", e),
+        };
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    }
+
+    fn seeded(db: &crate::db::testing::TestDb) {
+        let c = db.conn();
+        c.execute(
+            "INSERT INTO anime (uid, anilist_id, title_romaji, title_key, title_english,
+                title_russian, start_year, score, format, is_adult, episodes, popularity,
+                created_at, updated_at)
+             VALUES ('al:16498', 16498, 'Shingeki no Kyojin', 'shingeki no kyojin', 'Attack on Titan',
+                'Атака Титанов', 2013, 84, 'TV', 0, 25, 100, 1, 1)",
+            [],
+        )
+        .unwrap();
+        // The search endpoints read the FTS index, which a real sync fills in
+        // after every page; a fixture that skipped it would test the empty case.
+        crate::db::rebuild_fts(&c).unwrap();
+    }
+
+    #[actix_web::test]
+    async fn the_catalogue_list_answers() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res =
+            test::call_service(&app, test::TestRequest::get().uri("/api/anime").to_request()).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get("x-total-count").unwrap(), "1");
+        let v = body_json(res).await;
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["items"][0]["uid"], "al:16498");
+    }
+
+    #[actix_web::test]
+    async fn the_detail_endpoint_answers_and_404s() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime/al:16498").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["uid"], "al:16498");
+        assert_eq!(v["title_russian"], "Атака Титанов");
+        assert_eq!(v["ids"]["anilist"], 16498);
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime/al:99999").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let v = body_json(res).await;
+        assert_eq!(v["error"]["code"], "not_found");
+    }
+
+    #[actix_web::test]
+    async fn the_raw_dump_answers() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime/al:16498/raw").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["uid"], "al:16498");
+        assert!(v.get("title_key").is_some());
+    }
+
+    #[actix_web::test]
+    async fn an_empty_suggestion_term_is_an_empty_list() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/search/suggest?q=").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[actix_web::test]
+    async fn the_suggestion_endpoint_answers() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/search/suggest?q=shingeki").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v[0]["uid"], "al:16498");
+    }
+
+    #[actix_web::test]
+    async fn the_filters_endpoint_answers() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res = test::call_service(&app, test::TestRequest::get().uri("/api/filters").to_request()).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["formats"][0], "TV");
+        assert_eq!(v["year_min"], 2013);
+        assert_eq!(v["year_max"], 2013);
+    }
+
+    #[actix_web::test]
+    async fn the_genres_endpoint_answers() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(&app, test::TestRequest::get().uri("/api/genres").to_request()).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert!(v["genres"].as_array().is_some());
+    }
+
+    #[actix_web::test]
+    async fn an_unknown_genre_id_is_a_404() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/genres/404/anime").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn the_stats_endpoint_answers() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res = test::call_service(&app, test::TestRequest::get().uri("/api/stats").to_request()).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["anime"], 1);
+        assert_eq!(v["with_russian"], 1);
+        assert_eq!(v["with_anilist"], 1);
+        assert_eq!(v["year_min"], 2013);
+    }
+
+    #[actix_web::test]
+    async fn the_sync_status_is_public() {
+        // A deployment dashboard watches a long import without credentials.
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/sync/status").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["running"], false);
+        assert_eq!(v["anime"], 0);
+    }
+
+    #[actix_web::test]
+    async fn starting_a_sync_without_the_admin_token_is_forbidden() {
+        // With no token presented the endpoints must not fall open, or anyone
+        // who finds the route can start a multi-hour import.
+        let db = test_db();
+        let app = app!(&db);
+        for uri in ["/api/sync/start", "/api/sync/abort"] {
+            let res = test::call_service(&app, test::TestRequest::post().uri(uri).to_request()).await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{}", uri);
+        }
+    }
+
+    #[actix_web::test]
+    async fn the_watchlist_endpoints_need_a_session() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        for uri in ["/api/favorites", "/api/favorites/counts"] {
+            let res = test::call_service(&app, test::TestRequest::get().uri(uri).to_request()).await;
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{}", uri);
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_full_signup_login_and_watchlist_round_trip() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(serde_json::json!({ "username": "user", "password": "password123" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let v = body_json(res).await;
+        let token = v["token"].as_str().unwrap().to_string();
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/auth/me")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["username"], "user");
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/favorites")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .set_json(serde_json::json!({ "uid": "al:16498", "status": "watching", "score": 9 }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["status"], "watching");
+        assert_eq!(v["episodes"], 25);
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/favorites")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .to_request(),
+        )
+        .await;
+        let v = body_json(res).await;
+        assert_eq!(v[0]["uid"], "al:16498", "запись приклеена к каталогу");
+
+        // The catalogue filter uses the same session.
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/anime?in_list=watching")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .to_request(),
+        )
+        .await;
+        let v = body_json(res).await;
+        assert_eq!(v["total"], 1);
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::delete()
+                .uri("/api/favorites/al:16498")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/logout")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        // The token is dead after the logout, so the session is gone.
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/auth/me")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn a_rejected_signup_answers_400_with_a_readable_message() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(serde_json::json!({ "username": "u", "password": "short" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(res).await;
+        assert_eq!(v["error"]["code"], "bad_request");
+        assert!(!v["error"]["message"].as_str().unwrap().is_empty());
+    }
+
+    #[actix_web::test]
+    async fn a_patch_to_the_watchlist_takes_the_uid_from_the_path() {
+        // A body carrying a different uid must not be honoured: the path is the
+        // thing the client was told to act on.
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(serde_json::json!({ "username": "user", "password": "password123" }))
+                .to_request(),
+        )
+        .await;
+        let v = body_json(res).await;
+        let token = v["token"].as_str().unwrap().to_string();
+
+        let res = test::call_service(
+            &app,
+            test::TestRequest::patch()
+                .uri("/api/favorites/al:16498")
+                .insert_header(("authorization", format!("Bearer {}", token)))
+                .set_json(serde_json::json!({ "uid": "al:other", "status": "planned" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["uid"], "al:16498");
+        assert_eq!(v["status"], "planned");
+    }
+
+    #[actix_web::test]
+    async fn the_image_proxy_refuses_a_foreign_host() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/img?u=https%3A%2F%2Fevil.example%2Fx.jpg")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn the_image_proxy_needs_a_url() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(&app, test::TestRequest::get().uri("/api/img").to_request()).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn a_preflight_is_answered_with_the_cors_policy() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::default()
+                .method(actix_web::http::Method::OPTIONS)
+                .uri("/api/anime")
+                .insert_header(("origin", "https://app.example"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(res.headers().get("access-control-allow-origin").unwrap(), "*");
+    }
+
+    #[actix_web::test]
+    async fn an_unknown_api_path_is_a_404() {
+        // A mistyped endpoint must not come back as 200 or as an HTML page the
+        // client cannot parse. (The JSON body of the 404 comes from the
+        // app-level default service in `main`, which is not part of this scope.)
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(&app, test::TestRequest::get().uri("/api/nope").to_request()).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn a_bad_query_parameter_is_rejected_instead_of_ignored() {
+        let db = test_db();
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime?page=second").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+}

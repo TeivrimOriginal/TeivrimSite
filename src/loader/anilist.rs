@@ -211,6 +211,10 @@ fn upsert(conn: &Connection, m: &Media) -> Result<(), rusqlite::Error> {
             .collect::<Vec<_>>())
     });
 
+    // `is_adult` is NOT NULL in the schema and AniList sends `null` for a
+    // handful of records, so an unknown flag becomes 0 rather than a failed
+    // insert: before, one row with a null flag was dropped from the catalogue
+    // entirely, and the loader only logged a warning about it.
     let b = |v: Option<bool>| v.map(|x| if x { 1 } else { 0 });
 
     // Named parameters throughout. The positional form this replaces had 52
@@ -319,7 +323,7 @@ fn upsert(conn: &Connection, m: &Media) -> Result<(), rusqlite::Error> {
             ":chapters": m.chapters,
             ":volumes": m.volumes,
             ":country_of_origin": m.country_of_origin,
-            ":is_adult": b(m.is_adult),
+            ":is_adult": b(m.is_adult).unwrap_or(0),
             ":is_licensed": b(m.is_licensed),
             ":season": m.season,
             ":season_year": m.season_year,
@@ -355,4 +359,438 @@ fn upsert(conn: &Connection, m: &Media) -> Result<(), rusqlite::Error> {
         },
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::conn;
+    use crate::sources::anilist::{CoverImage, FuzzyDate, Media, Title, Trailer};
+
+    fn media(id: i64) -> Media {
+        Media {
+            id,
+            id_mal: Some(20),
+            title: Title {
+                romaji: Some("Shingeki no Kyojin".into()),
+                english: Some("Attack on Titan".into()),
+                native: Some("進撃の巨人".into()),
+                user_preferred: Some("Shingeki no Kyojin".into()),
+            },
+            format: Some("TV".into()),
+            status: Some("FINISHED".into()),
+            description: Some("<p>Huge humanoids</p><p>Eat people</p>".into()),
+            duration: Some(24),
+            episodes: Some(25),
+            country_of_origin: Some("JP".into()),
+            is_adult: Some(false),
+            is_licensed: Some(true),
+            start_date: Some(FuzzyDate { year: Some(2013), month: Some(4), day: Some(7) }),
+            end_date: Some(FuzzyDate { year: Some(2023), month: Some(11), day: Some(4) }),
+            season: Some("SPRING".into()),
+            season_year: Some(2013),
+            average_score: Some(84),
+            mean_score: Some(85),
+            popularity: Some(12345),
+            favourites: Some(6789),
+            trending: Some(42),
+            cover_image: Some(CoverImage {
+                extra_large: Some("xl.jpg".into()),
+                large: Some("l.jpg".into()),
+                medium: Some("m.jpg".into()),
+                color: Some("#8f9494".into()),
+            }),
+            banner_image: Some("banner.jpg".into()),
+            trailer: Some(Trailer {
+                id: Some("abc".into()),
+                site: Some("youtube".into()),
+                thumbnail: Some("thumb.jpg".into()),
+            }),
+            genres: Some(vec!["Action".into(), "Drama".into()]),
+            ..Media::default()
+        }
+    }
+
+    fn get_str(c: &Connection, col: &str) -> Option<String> {
+        c.query_row(&format!("SELECT {} FROM anime WHERE uid = 'al:16498'", col), [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    fn get_i64(c: &Connection, col: &str) -> Option<i64> {
+        c.query_row(&format!("SELECT {} FROM anime WHERE uid = 'al:16498'", col), [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    // ------------------------------------------------------------- mapping
+
+    #[test]
+    fn stores_a_row_under_the_anilist_uid() {
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime WHERE uid = 'al:16498'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(get_i64(&c, "anilist_id"), Some(16498));
+        assert_eq!(get_i64(&c, "mal_id"), Some(20));
+    }
+
+    #[test]
+    fn maps_the_score_fields_and_their_source() {
+        // One merged 0..100 scale: AniList's number is used verbatim and the
+        // source is recorded so the UI can say where a rating came from.
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        assert_eq!(get_i64(&c, "score"), Some(84));
+        assert_eq!(get_i64(&c, "mean_score"), Some(85));
+        assert_eq!(get_str(&c, "score_source").as_deref(), Some("anilist"));
+    }
+
+    #[test]
+    fn remaps_the_cover_sizes_to_small_medium_large() {
+        // AniList names them extraLarge / large / medium; the schema names them
+        // by density so a client can pick a size without knowing the source.
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        assert_eq!(get_str(&c, "cover_small").as_deref(), Some("m.jpg"));
+        assert_eq!(get_str(&c, "cover_medium").as_deref(), Some("l.jpg"));
+        assert_eq!(get_str(&c, "cover_large").as_deref(), Some("xl.jpg"));
+        assert_eq!(get_str(&c, "cover_color").as_deref(), Some("#8f9494"));
+        assert_eq!(get_str(&c, "banner").as_deref(), Some("banner.jpg"));
+    }
+
+    #[test]
+    fn a_missing_cover_leaves_every_size_null() {
+        // No cover must stay NULL, not become an empty string: the API layer
+        // treats '' and NULL differently when it builds the placeholder URL.
+        let c = conn();
+        let mut m = media(16498);
+        m.cover_image = None;
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "cover_small"), None);
+        assert_eq!(get_str(&c, "cover_large"), None);
+        assert_eq!(get_str(&c, "cover_color"), None);
+    }
+
+    #[test]
+    fn splits_the_fuzzy_start_date_into_a_date_and_three_numbers() {
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        assert_eq!(get_str(&c, "start_date").as_deref(), Some("2013-04-07"));
+        assert_eq!(get_i64(&c, "start_year"), Some(2013));
+        assert_eq!(get_i64(&c, "start_month"), Some(4));
+        assert_eq!(get_i64(&c, "start_day"), Some(7));
+        assert_eq!(get_str(&c, "end_date").as_deref(), Some("2023-11-04"));
+        assert_eq!(get_i64(&c, "end_year"), Some(2023));
+    }
+
+    #[test]
+    fn stores_a_partial_date_as_its_longest_known_prefix() {
+        let c = conn();
+        let mut m = media(16498);
+        m.start_date = Some(FuzzyDate { year: Some(2024), month: Some(7), day: None });
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "start_date").as_deref(), Some("2024-07"));
+        assert_eq!(get_i64(&c, "start_month"), Some(7));
+        assert_eq!(get_i64(&c, "start_day"), None);
+    }
+
+    #[test]
+    fn an_unknown_date_leaves_every_date_column_null() {
+        let c = conn();
+        let mut m = media(16498);
+        m.start_date = None;
+        m.end_date = None;
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "start_date"), None);
+        assert_eq!(get_i64(&c, "start_year"), None);
+        assert_eq!(get_i64(&c, "end_year"), None);
+    }
+
+    #[test]
+    fn stores_the_description_as_plain_text() {
+        // The API serves text, never HTML: the markup must not reach a client.
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        assert_eq!(get_str(&c, "description").as_deref(), Some("Huge humanoids\nEat people"));
+    }
+
+    #[test]
+    fn collects_every_title_variant_into_alt_titles() {
+        // Search has to find a row by all of its names, including the ones the
+        // grid never shows.
+        let c = conn();
+        let mut m = media(16498);
+        m.synonyms = Some(vec!["AoT".into(), "Shingeki no Kyojin".into()]);
+        upsert(&c, &m).unwrap();
+
+        let raw = get_str(&c, "alt_titles").unwrap();
+        let v: Vec<String> = serde_json::from_str(&raw).unwrap();
+        // romaji, english, native and userPreferred, then the synonyms that are
+        // not already in the list.
+        assert!(v.contains(&"Shingeki no Kyojin".to_string()));
+        assert!(v.contains(&"Attack on Titan".to_string()));
+        assert!(v.contains(&"進撃の巨人".to_string()));
+        assert!(v.contains(&"AoT".to_string()));
+        assert_eq!(
+            v.iter().filter(|x| *x == "Shingeki no Kyojin").count(),
+            1,
+            "userPreferred повторяет romaji и должен быть отброшен"
+        );
+        assert_eq!(get_str(&c, "title_key").as_deref(), Some("shingeki no kyojin"));
+    }
+
+    #[test]
+    fn no_title_variants_means_no_alt_titles_column() {
+        let c = conn();
+        let mut m = media(16498);
+        m.title = Title::default();
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "alt_titles"), None);
+        assert_eq!(get_str(&c, "title_key"), None);
+        // The row itself still lands: an untitled entry is better than a lost
+        // page of the import.
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn blank_title_variants_are_not_stored_as_search_keys() {
+        // Whitespace-only names would otherwise become a searchable key that
+        // matches every LIKE.
+        let c = conn();
+        let mut m = media(16498);
+        m.title = Title {
+            romaji: Some("   ".into()),
+            english: Some("Attack on Titan".into()),
+            native: None,
+            user_preferred: None,
+        };
+        upsert(&c, &m).unwrap();
+        let raw = get_str(&c, "alt_titles").unwrap();
+        let v: Vec<String> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v, vec!["Attack on Titan".to_string()]);
+    }
+
+    #[test]
+    fn stores_genres_and_tags_in_their_own_columns() {
+        let c = conn();
+        let mut m = media(16498);
+        m.tags = Some(vec![crate::sources::anilist::Tag {
+            name: Some("Military".into()),
+            rank: Some(80),
+            is_media_spoiler: Some(false),
+        }]);
+        upsert(&c, &m).unwrap();
+        let genres: Vec<String> = serde_json::from_str(&get_str(&c, "genres_json").unwrap()).unwrap();
+        assert_eq!(genres, vec!["Action".to_string(), "Drama".to_string()]);
+
+        let tags: Vec<serde_json::Value> =
+            serde_json::from_str(&get_str(&c, "tags_json").unwrap()).unwrap();
+        // Tags are stored as objects, not strings: the detail page shows the
+        // rank and the spoiler flag next to each one.
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["name"], serde_json::json!("Military"));
+        assert_eq!(tags[0]["rank"], serde_json::json!(80));
+    }
+
+    #[test]
+    fn a_row_without_genres_stores_null_not_an_empty_array() {
+        // NULL and `[]` mean different things to the genre matcher, which
+        // decides whether a row still needs linking.
+        let c = conn();
+        let mut m = media(16498);
+        m.genres = None;
+        m.tags = None;
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "genres_json"), None);
+        assert_eq!(get_str(&c, "tags_json"), None);
+    }
+
+    #[test]
+    fn stores_the_trailer_parts() {
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        assert_eq!(get_str(&c, "trailer_id").as_deref(), Some("abc"));
+        assert_eq!(get_str(&c, "trailer_site").as_deref(), Some("youtube"));
+        assert_eq!(get_str(&c, "trailer_thumbnail").as_deref(), Some("thumb.jpg"));
+    }
+
+    #[test]
+    fn a_row_without_a_trailer_stores_nulls() {
+        let c = conn();
+        let mut m = media(16498);
+        m.trailer = None;
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "trailer_id"), None);
+        assert_eq!(get_str(&c, "trailer_site"), None);
+    }
+
+    #[test]
+    fn stores_boolean_flags_as_integers() {
+        let c = conn();
+        let mut m = media(16498);
+        m.is_adult = Some(true);
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_i64(&c, "is_adult"), Some(1));
+        assert_eq!(get_i64(&c, "is_licensed"), Some(1));
+
+        let mut m2 = media(16499);
+        m2.is_adult = Some(false);
+        upsert(&c, &m2).unwrap();
+        let adult: i64 = c
+            .query_row("SELECT is_adult FROM anime WHERE uid = 'al:16499'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(adult, 0);
+    }
+
+    #[test]
+    fn an_unknown_adult_flag_is_stored_as_false() {
+        // The column is NOT NULL and AniList does send `null`, so the loader
+        // has to decide: 0 keeps the row in the catalogue, NULL would have
+        // dropped it.
+        let c = conn();
+        let mut m = media(16498);
+        m.is_adult = None;
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_i64(&c, "is_adult"), Some(0));
+    }
+
+    #[test]
+    fn stores_the_nested_lists_as_json_arrays() {
+        use crate::sources::anilist::{
+            Connection as AniConnection, ExternalLink, RecommendationConnection, RecommendationNode,
+            RelationConnection, RelationEdge, RelationNode, StreamingEpisode, Studio,
+        };
+
+        let c = conn();
+        let mut m = media(16498);
+        m.studios = Some(AniConnection {
+            nodes: Some(vec![Studio { name: Some("Wit Studio".into()), is_animation_studio: Some(true) }]),
+        });
+        m.relations = Some(RelationConnection {
+            edges: Some(vec![RelationEdge {
+                relation_type: Some("PREQUEL".into()),
+                node: Some(RelationNode {
+                    id: 11061,
+                    title: Some(Title { romaji: Some("Kaban".into()), ..Title::default() }),
+                    format: Some("MOVIE".into()),
+                    status: Some("FINISHED".into()),
+                    cover_image: Some(CoverImage {
+                        large: Some("kaban.jpg".into()),
+                        ..CoverImage::default()
+                    }),
+                }),
+            }]),
+        });
+        m.external_links = Some(vec![ExternalLink {
+            id: 1,
+            url: Some("https://myanimelist.net/anime/20".into()),
+            site: Some("MAL".into()),
+            link_type: Some("ANILIST_SITE".into()),
+        }]);
+        m.streaming_episodes = Some(vec![StreamingEpisode {
+            title: Some("Episode 1".into()),
+            thumbnail: None,
+            url: Some("https://anilist.co/watch/1".into()),
+            site: Some("anilist".into()),
+        }]);
+        m.recommendations = Some(RecommendationConnection {
+            nodes: Some(vec![RecommendationNode {
+                rating: Some(95),
+                media_recommendation: Some(crate::sources::anilist::RecommendedMedia {
+                    id: 127230,
+                    title: Some(Title { romaji: Some("Gingitsune".into()), ..Title::default() }),
+                    format: Some("TV_SHORT".into()),
+                    cover_image: None,
+                }),
+            }]),
+        });
+        upsert(&c, &m).unwrap();
+
+        for col in ["studios_json", "relations_json", "external_links_json", "streaming_json", "recommendations_json"] {
+            let raw = get_str(&c, col).unwrap_or_else(|| panic!("{} пуст", col));
+            let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{} не JSON: {}", col, e));
+            assert!(v.is_array(), "{} не массив", col);
+            assert_eq!(v.as_array().unwrap().len(), 1, "{} пуст", col);
+        }
+
+        let relations: serde_json::Value =
+            serde_json::from_str(&get_str(&c, "relations_json").unwrap()).unwrap();
+        assert_eq!(relations[0]["relationType"], serde_json::json!("PREQUEL"));
+        assert_eq!(relations[0]["id"], serde_json::json!(11061));
+    }
+
+    #[test]
+    fn a_relation_with_a_null_node_is_dropped() {
+        use crate::sources::anilist::{RelationConnection, RelationEdge};
+        let c = conn();
+        let mut m = media(16498);
+        m.relations = Some(RelationConnection {
+            edges: Some(vec![
+                RelationEdge { relation_type: Some("PREQUEL".into()), node: None },
+                RelationEdge { relation_type: Some("SEQUEL".into()), node: None },
+            ]),
+        });
+        upsert(&c, &m).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&get_str(&c, "relations_json").unwrap()).unwrap();
+        assert!(v.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_connection_lists_are_stored_as_empty_arrays() {
+        use crate::sources::anilist::{Connection as AniConnection, RelationConnection};
+        let c = conn();
+        let mut m = media(16498);
+        m.studios = Some(AniConnection { nodes: Some(vec![]) });
+        m.relations = Some(RelationConnection { edges: Some(vec![]) });
+        upsert(&c, &m).unwrap();
+        assert_eq!(get_str(&c, "studios_json").as_deref(), Some("[]"));
+        assert_eq!(get_str(&c, "relations_json").as_deref(), Some("[]"));
+    }
+
+    // -------------------------------------------------------------- re-import
+
+    #[test]
+    fn a_second_import_does_not_erase_what_it_no_longer_knows() {
+        // COALESCE on the update path: a title that lost its English name on
+        // the source must keep the one we already have, otherwise the grid
+        // flickers to "Без названия" on every re-sync.
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+
+        let mut thin = media(16498);
+        thin.title = Title { romaji: Some("Shingeki no Kyojin".into()), ..Title::default() };
+        thin.cover_image = None;
+        thin.trailer = None;
+        thin.average_score = None;
+        thin.episodes = None;
+        thin.description = None;
+        upsert(&c, &thin).unwrap();
+
+        assert_eq!(get_str(&c, "title_english").as_deref(), Some("Attack on Titan"));
+        assert_eq!(get_str(&c, "cover_large").as_deref(), Some("xl.jpg"));
+        assert_eq!(get_i64(&c, "score"), Some(84));
+        assert_eq!(get_i64(&c, "episodes"), Some(25));
+        assert!(get_str(&c, "description").is_some());
+        assert_eq!(get_str(&c, "title_romaji").as_deref(), Some("Shingeki no Kyojin"));
+
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "повторный импорт не должен плодить строки");
+    }
+
+    #[test]
+    fn a_second_import_refreshes_the_sync_timestamp() {
+        let c = conn();
+        upsert(&c, &media(16498)).unwrap();
+        let first: i64 = get_i64(&c, "updated_at").unwrap();
+        upsert(&c, &media(16498)).unwrap();
+        let second: i64 = get_i64(&c, "updated_at").unwrap();
+        assert!(second >= first);
+        assert!(get_i64(&c, "anilist_synced_at").is_some());
+    }
 }

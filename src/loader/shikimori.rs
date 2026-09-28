@@ -354,3 +354,336 @@ fn normalize_status(s: &str) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::{conn, insert_anime};
+    use crate::sources::shikimori::{ImageSet, Named, Tag};
+    use serde_json::json;
+
+    fn item(id: i64) -> Anime {
+        Anime {
+            id,
+            name: Some("Shingeki no Kyojin".into()),
+            russian: Some("Атака Титанов".into()),
+            english: Some(vec!["Attack on Titan".into()]),
+            japanese: Some(vec!["進撃の巨人".into()]),
+            synonyms: Some(vec!["AoT".into()]),
+            kind: Some("tv".into()),
+            rating: Some("9.1".into()),
+            score: Some(9.15),
+            status: Some("released".into()),
+            episodes: Some(25),
+            episodes_aired: Some(25),
+            aired_on: Some("2013-04-07".into()),
+            released_on: None,
+            description: Some("<p>Гиганты</p>".into()),
+            image: Some(ImageSet {
+                original: Some("https://shikimori.one/o.jpg".into()),
+                preview: None,
+            }),
+            studios: Some(vec![Named {
+                name: Some("Wit Studio".into()),
+                russian: Some("Wit Studio".into()),
+            }]),
+            genres: Some(vec![Named { name: Some("Action".into()), russian: Some("Боевик".into()) }]),
+            tags: Some(vec![Tag { name: Some("Military".into()), russian: Some("Военный".into()) }]),
+            rates: None,
+        }
+    }
+
+    fn get_str(c: &Connection, uid: &str, col: &str) -> Option<String> {
+        c.query_row(&format!("SELECT {} FROM anime WHERE uid = ?1", col), [uid], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn get_i64(c: &Connection, uid: &str, col: &str) -> Option<i64> {
+        c.query_row(&format!("SELECT {} FROM anime WHERE uid = ?1", col), [uid], |r| r.get(0))
+            .unwrap()
+    }
+
+    // ---------------------------------------------------------- normalising
+
+    #[test]
+    fn kinds_are_folded_onto_the_shared_vocabulary() {
+        // Same reason as Kitsu: one filter has to match whatever wrote the
+        // column.
+        for (raw, want) in [
+            ("tv", "TV"),
+            ("TV", "TV"),
+            ("movie", "MOVIE"),
+            ("ova", "OVA"),
+            ("ona", "ONA"),
+            ("special", "SPECIAL"),
+            ("music", "MUSIC"),
+        ] {
+            assert_eq!(normalize_kind(raw), want, "kind {}", raw);
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_kept_verbatim() {
+        assert_eq!(normalize_kind("music_video"), "music_video");
+        assert_eq!(normalize_kind(""), "");
+    }
+
+    #[test]
+    fn statuses_are_folded_onto_the_shared_vocabulary() {
+        for (raw, want) in [
+            ("released", "FINISHED"),
+            ("finished", "FINISHED"),
+            ("airing", "RELEASING"),
+            ("current", "RELEASING"),
+            ("not_aired", "NOT_YET_RELEASED"),
+            ("upcoming", "NOT_YET_RELEASED"),
+            ("hiatus", "HIATUS"),
+            ("on_hiatus", "HIATUS"),
+            ("cancelled", "CANCELLED"),
+            ("discontinued", "CANCELLED"),
+        ] {
+            assert_eq!(normalize_status(raw), want, "status {}", raw);
+        }
+    }
+
+    #[test]
+    fn an_unknown_status_is_kept_verbatim() {
+        assert_eq!(normalize_status("announced"), "announced");
+    }
+
+    #[test]
+    fn a_year_is_read_off_the_head_of_a_date() {
+        assert_eq!(year_of(Some("2013-04-07")), Some(2013));
+        assert_eq!(year_of(Some("2013")), Some(2013));
+        // An empty or non-numeric head must not become 0.
+        assert_eq!(year_of(Some("")), None);
+        assert_eq!(year_of(Some("????-04-07")), None);
+        assert_eq!(year_of(Some("2013-04-07T00:00:00")), Some(2013));
+        assert_eq!(year_of(None), None);
+    }
+
+    // ---------------------------------------------------------------- merge
+
+    #[test]
+    fn a_russian_name_attaches_to_an_existing_row_by_normalised_title() {
+        // The join is by name because Shikimori exposes no external ids. The key
+        // is what makes it case-insensitive for Cyrillic, which LIKE is not.
+        let c = conn();
+        insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
+        let outcome = upsert(&c, &item(16498));
+        assert!(matches!(outcome, Ok(Merge::Merged)));
+        assert_eq!(get_str(&c, "al:16498", "title_russian").as_deref(), Some("Атака Титанов"));
+        assert_eq!(get_i64(&c, "al:16498", "shikimori_id"), Some(16498));
+    }
+
+    #[test]
+    fn the_merge_is_case_insensitive() {
+        // `LIKE` in SQLite folds ASCII only, which is why the stored
+        // `title_key` exists; the merge has to use it.
+        let c = conn();
+        insert_anime(&c, "al:16498", Some("SHINGEKI NO KYOJIN"));
+        assert!(matches!(upsert(&c, &item(16498)), Ok(Merge::Merged)));
+        assert_eq!(get_str(&c, "al:16498", "title_russian").as_deref(), Some("Атака Титанов"));
+    }
+
+    #[test]
+    fn the_merge_falls_back_to_the_english_name() {
+        // A title AniList stores only under title_english still has to join.
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, title_english, created_at) VALUES ('al:1', 'Attack on Titan', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(upsert(&c, &item(16498)), Ok(Merge::Merged)));
+        assert_eq!(get_str(&c, "al:1", "title_russian").as_deref(), Some("Атака Титанов"));
+    }
+
+    #[test]
+    fn an_unknown_title_creates_a_row_under_a_shikimori_uid() {
+        let c = conn();
+        assert!(matches!(upsert(&c, &item(999)), Ok(Merge::Created)));
+        assert_eq!(get_str(&c, "sh:999", "title_russian").as_deref(), Some("Атака Титанов"));
+        assert_eq!(get_i64(&c, "sh:999", "shikimori_id"), Some(999));
+        assert_eq!(get_str(&c, "sh:999", "title_romaji").as_deref(), Some("Shingeki no Kyojin"));
+        assert_eq!(get_str(&c, "sh:999", "title_key").as_deref(), Some("shingeki no kyojin"));
+    }
+
+    #[test]
+    fn an_entry_without_a_russian_name_changes_nothing() {
+        // The only thing Shikimori uniquely contributes is the Russian title,
+        // so an entry without one is not worth a stub row.
+        let c = conn();
+        let mut it = item(999);
+        it.russian = Some("   ".into());
+        assert!(matches!(upsert(&c, &it), Ok(Merge::Merged)));
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn the_ten_point_score_is_rescaled_to_the_catalogue_scale() {
+        // One merged 0..100 scale across all three sources.
+        let c = conn();
+        upsert(&c, &item(999)).unwrap();
+        assert_eq!(get_i64(&c, "sh:999", "score"), Some(92)); // 9.15 * 10 rounded
+        assert_eq!(get_str(&c, "sh:999", "score_source").as_deref(), Some("shikimori"));
+    }
+
+    #[test]
+    fn an_unscored_entry_stores_no_score_source() {
+        let c = conn();
+        let mut it = item(999);
+        it.score = None;
+        upsert(&c, &it).unwrap();
+        assert_eq!(get_i64(&c, "sh:999", "score"), None);
+        assert_eq!(get_str(&c, "sh:999", "score_source"), None);
+    }
+
+    #[test]
+    fn the_merge_does_not_overwrite_a_rating_another_source_provided() {
+        let c = conn();
+        insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
+        c.execute("UPDATE anime SET score = 84, score_source = 'anilist' WHERE uid = 'al:16498'", [])
+            .unwrap();
+        upsert(&c, &item(16498)).unwrap();
+        assert_eq!(get_i64(&c, "al:16498", "score"), Some(84));
+        assert_eq!(get_str(&c, "al:16498", "score_source").as_deref(), Some("anilist"));
+    }
+
+    #[test]
+    fn the_merge_prefers_the_russian_description_and_keeps_the_old_one_when_absent() {
+        // Shikimori is the only source with a Russian synopsis, so a non-null
+        // one replaces whatever was there; a row without one leaves the stored
+        // text alone.
+        let c = conn();
+        insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
+        c.execute(
+            "UPDATE anime SET description_ru = 'уже есть' WHERE uid = 'al:16498'",
+            [],
+        )
+        .unwrap();
+        upsert(&c, &item(16498)).unwrap();
+        assert_eq!(get_str(&c, "al:16498", "description_ru").as_deref(), Some("Гиганты"));
+
+        let mut bare = item(16498);
+        bare.description = None;
+        upsert(&c, &bare).unwrap();
+        assert_eq!(get_str(&c, "al:16498", "description_ru").as_deref(), Some("Гиганты"));
+    }
+
+    #[test]
+    fn the_merge_fills_in_episodes_year_and_cover() {
+        let c = conn();
+        insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
+        upsert(&c, &item(16498)).unwrap();
+        assert_eq!(get_i64(&c, "al:16498", "episodes"), Some(25));
+        assert_eq!(get_i64(&c, "al:16498", "start_year"), Some(2013));
+        assert_eq!(get_str(&c, "al:16498", "start_date").as_deref(), Some("2013-04-07"));
+        assert_eq!(
+            get_str(&c, "al:16498", "cover_large").as_deref(),
+            Some("https://shikimori.one/o.jpg")
+        );
+    }
+
+    #[test]
+    fn a_release_date_is_used_when_there_is_no_aired_date() {
+        // Movies report `released_on` and nothing else; dropping it lost the
+        // year for every film in the catalogue.
+        let c = conn();
+        let mut it = item(999);
+        it.aired_on = None;
+        it.released_on = Some("1998-04-03".into());
+        upsert(&c, &it).unwrap();
+        assert_eq!(get_i64(&c, "sh:999", "start_year"), Some(1998));
+    }
+
+    #[test]
+    fn studios_are_stored_with_their_russian_names() {
+        let c = conn();
+        upsert(&c, &item(999)).unwrap();
+        let raw = get_str(&c, "sh:999", "studios_json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v[0]["name"], json!("Wit Studio"));
+        assert_eq!(v[0]["name_ru"], json!("Wit Studio"));
+    }
+
+    #[test]
+    fn an_entry_without_studios_stores_no_json() {
+        let c = conn();
+        let mut it = item(999);
+        it.studios = None;
+        upsert(&c, &it).unwrap();
+        assert_eq!(get_str(&c, "sh:999", "studios_json"), None);
+    }
+
+    #[test]
+    fn a_created_row_normalises_its_kind_and_status() {
+        let c = conn();
+        upsert(&c, &item(999)).unwrap();
+        assert_eq!(get_str(&c, "sh:999", "format").as_deref(), Some("TV"));
+        assert_eq!(get_str(&c, "sh:999", "status").as_deref(), Some("FINISHED"));
+    }
+
+    #[test]
+    fn a_second_visit_does_not_duplicate_the_created_row() {
+        let c = conn();
+        upsert(&c, &item(999)).unwrap();
+        assert!(matches!(upsert(&c, &item(999)), Ok(Merge::Merged)));
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn an_entry_with_no_name_at_all_still_creates_a_keyed_row() {
+        // A nameless entry must not write an empty `title_key`, which would
+        // join every other nameless entry in the catalogue.
+        let c = conn();
+        let mut it = item(999);
+        it.name = None;
+        upsert(&c, &it).unwrap();
+        assert_eq!(get_str(&c, "sh:999", "title_key"), None);
+        assert_eq!(get_str(&c, "sh:999", "title_romaji"), None);
+    }
+
+    #[test]
+    fn genres_get_their_russian_labels_from_the_name_column() {
+        // Shikimori is the only source that knows "Боевик", but the genre
+        // matcher only ever sees the English name, so the Russian half of the
+        // filter UI comes from this table.
+        let c = conn();
+        insert_anime(&c, "al:1", Some("Shingeki no Kyojin"));
+        c.execute(
+            "UPDATE anime SET genres_json = '[\"Action\"]' WHERE uid = 'al:1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(super::super::genres::match_uids(&c, &["al:1".to_string()]), 1);
+        apply_genre_ru(&c).unwrap();
+        let ru: Option<String> = c
+            .query_row(
+                "SELECT name_ru FROM genres WHERE LOWER(name_en) = 'action'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ru.as_deref(), Some("Боевик"));
+    }
+
+    #[test]
+    fn apply_genre_ru_matches_the_name_case_insensitively() {
+        // The reference list is lowercased English; the stored name is whatever
+        // the source sent.
+        let c = conn();
+        c.execute(
+            "INSERT INTO genres (slug, name_en, created_at) VALUES ('comedy', 'Comedy', 1)",
+            [],
+        )
+        .unwrap();
+        apply_genre_ru(&c).unwrap();
+        let ru: Option<String> = c
+            .query_row("SELECT name_ru FROM genres WHERE slug = 'comedy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ru.as_deref(), Some("Комедия"));
+    }
+}
