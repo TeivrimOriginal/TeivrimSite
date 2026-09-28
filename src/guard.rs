@@ -447,4 +447,103 @@ mod frontend {
             unreachable
         );
     }
+
+    /// The sort chips on the catalogue and the `ORDER BY` whitelist.
+    ///
+    /// `order_clause` falls back to the default for anything it does not know,
+    /// so a sort the UI offers but the API lacks is not an error: the chip
+    /// appears to do nothing and the order silently stays the default. A sort
+    /// the API has and the UI does not is the reverse, and just as quiet.
+    #[test]
+    fn every_sort_the_frontend_offers_is_one_the_api_orders_by() {
+        let catalog = read_static("catalog.js");
+        let start = catalog
+            .find("const SORTS = [")
+            .expect("SORTS в catalog.js")
+            + "const SORTS = [".len();
+        let end = catalog[start..].find("];").expect("SORTS не закрыт");
+        let offered: BTreeSet<String> = catalog[start..start + end]
+            .lines()
+            .filter_map(|l| {
+                // The entry is `['value', 'i18n_key'],` — the value is the first
+                // quoted string, the second one is a translation key that
+                // `I18n.t` is checked against separately.
+                let mut parts = l.split('\'').skip(1);
+                parts.next().map(String::from)
+            })
+            .collect();
+        assert!(offered.len() >= 10, "разобрано: {:?}", offered);
+
+        let api = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/catalog.rs"),
+        )
+        .expect("catalog.rs");
+        let accepted: BTreeSet<String> = api
+            .lines()
+            .filter(|l| l.contains("=> \"ORDER BY"))
+            .filter_map(|l| l.split('"').nth(1).map(String::from))
+            .collect();
+        assert!(accepted.contains("title_ru"), "список сортировок не разобран");
+
+        // `popularity` is the default arm of the match rather than a listed
+        // one, so it is added back by hand — a chip for it is legitimate, and
+        // the fallback is what would answer it anyway.
+        let unknown: Vec<&String> = offered
+            .iter()
+            .filter(|s| !accepted.contains(*s) && s.as_str() != "popularity")
+            .collect();
+        assert!(unknown.is_empty(), "чип сортировки без ORDER BY в API: {:?}", unknown);
+    }
+
+    /// The catalogue filter keys are the parameter names of `ListQuery`.
+    ///
+    /// `deny_unknown_fields` is what turned the old `has_ru` typo into a 400
+    /// that blanked the entire catalogue page, so a key the API does not know
+    /// is the single most expensive kind of drift on this boundary. The check
+    /// runs in both directions: an unknown key breaks the page, and a key nobody
+    /// sends is a filter that cannot be used.
+    #[test]
+    fn every_catalogue_filter_key_is_a_parameter_the_api_accepts() {
+        let catalog = read_static("catalog.js");
+        let start = catalog
+            .find("const defaults = () => ({")
+            .expect("defaults в catalog.js")
+            + "const defaults = () => ({".len();
+        let end = catalog[start..].find("});").expect("defaults не закрыт");
+        let sent: BTreeSet<String> = catalog[start..start + end]
+            .lines()
+            .filter_map(|l| {
+                let key = l.split(':').next()?.trim();
+                (!key.is_empty() && l.contains(':')).then(|| key.to_string())
+            })
+            .collect();
+        assert!(sent.len() >= 10, "разобрано: {:?}", sent);
+
+        let models = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/models.rs"),
+        )
+        .expect("models.rs");
+        let query = models
+            .split("pub struct ListQuery {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("ListQuery в models.rs");
+        let accepted: BTreeSet<String> = query
+            .lines()
+            .filter_map(|l| l.split("pub ").nth(1)?.split(':').next())
+            .map(|k| k.trim().to_string())
+            .collect();
+        assert!(
+            accepted.contains("has_russian") && accepted.contains("in_list"),
+            "список параметров не разобран: {:?}",
+            accepted
+        );
+
+        let unknown: Vec<&String> = sent.iter().filter(|k| !accepted.contains(*k)).collect();
+        assert!(
+            unknown.is_empty(),
+            "фронтенд шлёт параметр, которого нет в ListQuery (даст 400 на всю страницу): {:?}",
+            unknown
+        );
+    }
 }
