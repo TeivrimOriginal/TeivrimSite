@@ -156,8 +156,19 @@ pub fn has_next_page(received: u64, page: u32, per_page: u32, total: u64) -> boo
 }
 
 /// Cheap reachability probe used at worker start-up.
+///
+/// The one record it reads has carried the same Russian title for years, and
+/// the probe runs at the start of every pass, so it is reused for the life of
+/// the process. A cache that outlived a source being *down* would be a
+/// different design: the first failure is not stored, so a source that comes
+/// back is noticed on the next pass.
 pub async fn ping(up: &crate::upstream::Upstream) -> Result<Option<String>, String> {
-    let value = up.get_json(&format!("{}/animes/16498", API)).await?;
+    let value = up
+        .get_json_cached(
+            &format!("{}/animes/16498", API),
+            crate::upstream::Freshness::Forever,
+        )
+        .await?;
     Ok(value
         .get("russian")
         .and_then(|v| v.as_str())

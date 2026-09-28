@@ -89,6 +89,29 @@ async fn refresh(ctx: &Ctx) {
     }
     log_info("=== плановое обновление каталога ===");
     run_claimed(ctx.clone()).await;
+    report_cache(ctx);
+}
+
+/// One line per source saying how much the response cache did.
+///
+/// The claim that catalogue pages are never reused and reference documents
+/// always are lives in `upstream::Freshness`. A number in the log is the only
+/// version of that claim that stays true.
+fn report_cache(ctx: &Ctx) {
+    for (name, up) in [
+        ("anilist", &ctx.sources.anilist),
+        ("kitsu", &ctx.sources.kitsu),
+        ("shikimori", &ctx.sources.shikimori),
+    ] {
+        let s = up.cache_stats();
+        if s.hits == 0 && s.refused == 0 {
+            continue;
+        }
+        log_info(&format!(
+            "[{}] кэш ответов: {} записей ({} байт), попаданий {}, промахов {}, не влезло {}",
+            name, s.entries, s.bytes, s.hits, s.misses, s.refused
+        ));
+    }
 }
 
 /// Clears the `finished` flag on every task. Split out of [`refresh`] because

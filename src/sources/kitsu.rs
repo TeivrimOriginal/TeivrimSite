@@ -267,9 +267,20 @@ pub async fn fetch_staff(up: &crate::upstream::Upstream, kitsu_id: &str) -> Resu
     up.get_json(&url).await
 }
 
-/// Genres and categories, cached once per process.
-pub async fn fetch_genres(up: &crate::upstream::Upstream) -> Result<serde_json::Value, String> {
-    up.get_json(&format!("{}/genres?page%5Blimit%5D=200", API)).await
+/// Genres and categories: a reference document, fetched once per process.
+///
+/// The list is a fixed taxonomy that Kitsu edits in rare, large batches, and
+/// it is asked for at the start of every pass. Reused for the life of the
+/// process; a restart is how a deployment picks up an edited list, which is
+/// cheaper than asking again on every refresh.
+pub async fn fetch_genres(
+    up: &crate::upstream::Upstream,
+) -> Result<serde_json::Value, String> {
+    up.get_json_cached(
+        &format!("{}/genres?page%5Blimit%5D=200", API),
+        crate::upstream::Freshness::Forever,
+    )
+    .await
 }
 
 #[cfg(test)]

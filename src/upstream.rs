@@ -1,7 +1,109 @@
 use crate::error::log_warn;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// How long a successful GET answer may be reused.
+///
+/// The measurement behind this enum, from the loaders as they were written:
+/// `/api/*` never opens a connection to a source at all, it reads SQLite, and
+/// inside a pass each `(source, sort, page)` URL is requested exactly once
+/// because the walk goes forward and a restart resumes from the checkpoint.
+/// So there was nothing to gain from caching pages.
+///
+/// What repeats is a pair of URLs that are asked for again on every pass, now
+/// that there is a refresh timer: Kitsu's genre list and the Shikimori
+/// reachability probe. Both are reference documents a source publishes once
+/// and does not edit in place, and `fetch_genres` was already documented as
+/// "cached once per process" while caching nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// Every call goes out.
+    ///
+    /// What every catalogue page uses, and the only safe default: the whole
+    /// point of asking AniList for page 400 is to see what it says now.
+    Now,
+    /// Reuse the answer for the life of the process.
+    ///
+    /// Only for reference data. It is not a TTL, because a TTL would be a lie
+    /// either way — long enough not to matter, or short enough that a restarted
+    /// process is the honest way to pick up an edited list.
+    Forever,
+}
+
+/// Upper bounds on the cache.
+///
+/// The cache exists to stop two small documents being re-requested once per
+/// pass, so it is sized for exactly that and refuses anything larger rather
+/// than growing: a catalogue page would fit in the entry count and blow the
+/// byte bound, and the byte bound is the one that matters.
+const CACHE_MAX_ENTRIES: usize = 32;
+const CACHE_MAX_BYTES: usize = 1024 * 1024;
+
+/// What the cache is holding, for the log line and for the tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheStats {
+    pub entries: usize,
+    pub bytes: usize,
+    pub hits: u64,
+    pub misses: u64,
+    /// Answers that were correct but too large to keep.
+    pub refused: u64,
+}
+
+/// Reuse of reference answers, keyed by URL.
+///
+/// A `Vec` of entries would be fine at thirty-two, but a map is the same
+/// amount of code and does not turn the second lookup into a scan.
+#[derive(Default)]
+struct Cache {
+    entries: HashMap<String, Value>,
+    bytes: usize,
+    hits: u64,
+    misses: u64,
+    refused: u64,
+}
+
+impl Cache {
+    fn get(&mut self, url: &str) -> Option<Value> {
+        match self.entries.get(url) {
+            // Cloned on the way out: the cache is read on every pass and a
+            // caller that mutates a `Value` it was handed would poison it for
+            // the next one. It is two reference documents a day.
+            Some(v) => {
+                self.hits += 1;
+                Some(v.clone())
+            }
+            None => {
+                self.misses += 1;
+                None
+            }
+        }
+    }
+
+    fn put(&mut self, url: &str, value: Value) {
+        let size = value.to_string().len();
+        if size > CACHE_MAX_BYTES || self.entries.len() >= CACHE_MAX_ENTRIES {
+            // Not an error: the caller asked for reuse, not for storage, and a
+            // document this large was never reference data to begin with.
+            self.refused += 1;
+            return;
+        }
+        self.bytes += size;
+        self.entries.insert(url.to_string(), value);
+    }
+
+    fn stats(&self) -> CacheStats {
+        CacheStats {
+            entries: self.entries.len(),
+            bytes: self.bytes,
+            hits: self.hits,
+            misses: self.misses,
+            refused: self.refused,
+        }
+    }
+}
 
 /// A tiny fixed-window rate limiter.
 ///
@@ -23,6 +125,7 @@ pub struct Upstream {
     /// Attempts per request, including the first.
     attempts: u32,
     extra_headers: Vec<(String, String)>,
+    cache: Mutex<Cache>,
 }
 
 impl Upstream {
@@ -54,6 +157,7 @@ impl Upstream {
             min_interval,
             attempts: 5,
             extra_headers,
+            cache: Mutex::new(Cache::default()),
         })
     }
 
@@ -105,21 +209,51 @@ impl Upstream {
     }
 
     /// GET returning parsed JSON, with pacing, `Retry-After` handling and
-    /// exponential backoff.
+    /// exponential backoff. Nothing is reused: see [`Freshness`].
     pub async fn get_json(&self, url: &str) -> Result<Value, String> {
-        self.request_with(|rb| async move { rb.send().await }, url, "GET").await
+        self.fetch(|rb| async move { rb.send().await }, url, "GET", false)
+            .await
+    }
+
+    /// GET whose answer the caller is willing to reuse.
+    pub async fn get_json_cached(
+        &self,
+        url: &str,
+        freshness: Freshness,
+    ) -> Result<Value, String> {
+        if freshness == Freshness::Now {
+            return self.get_json(url).await;
+        }
+        if let Some(hit) = self.cache.lock().unwrap_or_else(|p| p.into_inner()).get(url) {
+            return Ok(hit);
+        }
+        // The store happens inside `fetch` and only on a 2xx, so a failed
+        // request is never remembered as an answer.
+        self.fetch(|rb| async move { rb.send().await }, url, "GET", true)
+            .await
+    }
+
+    /// What the cache is holding. Reported in the log after a pass so the claim
+    /// in [`Freshness`] is a number in the log rather than a comment.
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.lock().unwrap_or_else(|p| p.into_inner()).stats()
     }
 
     pub async fn post_json(&self, url: &str, body: &Value) -> Result<Value, String> {
-        self.request_with(
-            |rb| async move { rb.json(body).send().await },
-            url,
-            "POST",
-        )
-        .await
+        // Never cached. The body is the query, so two POSTs to the same URL are
+        // two different questions and a cache keyed by URL cannot tell them
+        // apart.
+        self.fetch(|rb| async move { rb.json(body).send().await }, url, "POST", false)
+            .await
     }
 
-    async fn request_with<F, Fut>(&self, send: F, url: &str, method: &str) -> Result<Value, String>
+    async fn fetch<F, Fut>(
+        &self,
+        send: F,
+        url: &str,
+        method: &str,
+        store: bool,
+    ) -> Result<Value, String>
     where
         F: Fn(reqwest::RequestBuilder) -> Fut,
         Fut: std::future::Future<Output = reqwest::Result<reqwest::Response>>,
@@ -150,8 +284,18 @@ impl Upstream {
             let status = resp.status();
             if status.is_success() {
                 let text = resp.text().await.map_err(|e| format!("body: {}", e))?;
-                return serde_json::from_str(&text)
-                    .map_err(|e| format!("json: {} (начало ответа: {})", e, truncate(&text, 200)));
+                let value: Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("json: {} (начало ответа: {})", e, truncate(&text, 200)))?;
+                if store {
+                    // Only a success is ever stored, so a source that was down
+                    // for a minute is retried on the next pass instead of being
+                    // remembered as broken for the life of the process.
+                    self.cache
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .put(url, value.clone());
+                }
+                return Ok(value);
             }
 
             if status.as_u16() == 429 || status.as_u16() == 403 {
@@ -488,6 +632,220 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v["a"], 1);
+    }
+
+    // ------------------------------------------------------ the cache
+    //
+    // The measurement that decided the cache exists: `/api/*` never opens a
+    // connection to a source, and inside a pass each page URL is asked for
+    // once. What repeats across passes is a pair of reference documents, so
+    // the tests below pin down both halves — those two are reused, and
+    // everything else goes out every time.
+
+    /// A server that answers `body` to everything, up to `times` requests, and
+    /// reports each one. The cache tests need to tell "asked again" from
+    /// "answered from memory", which is a count of requests, not a count of
+    /// responses the client happened to see.
+    ///
+    /// `Connection: close` because the loop accepts one socket per request: a
+    /// pooled connection would be handed a second request that nobody reads.
+    fn spawn_counting_server(body: String, times: usize) -> (String, std::sync::mpsc::Receiver<usize>) {
+        use std::io::{Read, Write};
+
+        let length = body.len();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            length, body
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut served = 0usize;
+            while served < times {
+                let Ok((mut sock, _)) = listener.accept() else { break };
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(response.as_bytes());
+                let _ = sock.flush();
+                served += 1;
+                if tx.send(served).is_err() {
+                    break;
+                }
+            }
+        });
+        (format!("http://{}/page", addr), rx)
+    }
+
+    /// The count the server reached, once it has reached at least `n`.
+    ///
+    /// The count is published after the response is written, so it can lag the
+    /// client by a moment; reading once and comparing would be a race.
+    fn served_up_to(rx: &std::sync::mpsc::Receiver<usize>, n: usize) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(got) if got >= n => return got,
+                Ok(_) => continue,
+                Err(_) => panic!("сервер обслужил меньше {} запросов", n),
+            }
+        }
+    }
+
+    /// Whether the server served a request the caller has not accounted for.
+    fn served_more_than(rx: &std::sync::mpsc::Receiver<usize>, seen: usize) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(400);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(got) if got > seen => return true,
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reference_document_is_asked_for_once_and_replayed() {
+        let (url, rx) = spawn_counting_server("{\"a\":1}".to_string(), 8);
+        let u = client();
+        let first = u.get_json_cached(&url, Freshness::Forever).await.unwrap();
+        assert_eq!(first["a"], 1);
+        assert_eq!(served_up_to(&rx, 1), 1);
+
+        for _ in 0..3 {
+            let again = u.get_json_cached(&url, Freshness::Forever).await.unwrap();
+            assert_eq!(again, first, "ответ из кэша отличается от первого");
+        }
+        assert!(
+            !served_more_than(&rx, 1),
+            "серверу ушёл повторный запрос: кэш не работает"
+        );
+
+        let s = u.cache_stats();
+        assert_eq!((s.entries, s.hits, s.misses), (1, 3, 1));
+    }
+
+    #[tokio::test]
+    async fn an_uncached_page_is_asked_for_every_single_time() {
+        // The other half of the measurement, and the reason the cache is
+        // opt-in: a catalogue page exists to be re-read, and one that came
+        // from memory would freeze the catalogue at whatever the source said
+        // the first time.
+        let (url, rx) = spawn_counting_server("{\"a\":1}".to_string(), 8);
+        let u = client();
+        for _ in 0..3 {
+            u.get_json(&url).await.unwrap();
+        }
+        assert_eq!(served_up_to(&rx, 3), 3, "повторные запросы не дошли до сервера");
+        assert_eq!(u.cache_stats().entries, 0, "страница попала в кэш");
+    }
+
+    #[tokio::test]
+    async fn now_freshness_is_the_same_as_no_cache_at_all() {
+        // `Freshness::Now` is what every page fetch passes, so a mistake here
+        // would quietly serve a stale catalogue to a user asking for a fresh
+        // one.
+        let (url, rx) = spawn_counting_server("{\"a\":1}".to_string(), 8);
+        let u = client();
+        u.get_json_cached(&url, Freshness::Now).await.unwrap();
+        u.get_json_cached(&url, Freshness::Now).await.unwrap();
+        assert_eq!(served_up_to(&rx, 2), 2);
+    }
+
+    #[tokio::test]
+    async fn two_documents_do_not_share_an_entry() {
+        // Keyed by URL, and the two that are cached are different documents on
+        // different hosts: a key mix-up would show one source another source's
+        // genres.
+        let (first_url, first_rx) = spawn_counting_server("{\"a\":1}".to_string(), 8);
+        let (second_url, second_rx) = spawn_counting_server("{\"a\":2}".to_string(), 8);
+        let u = client();
+        assert_eq!(u.get_json_cached(&first_url, Freshness::Forever).await.unwrap()["a"], 1);
+        assert_eq!(u.get_json_cached(&second_url, Freshness::Forever).await.unwrap()["a"], 2);
+        assert_eq!(first_rx.recv().unwrap(), 1);
+        assert_eq!(second_rx.recv().unwrap(), 1);
+        assert_eq!(u.cache_stats().entries, 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_is_never_remembered() {
+        // A source that answers 503 for a minute must not be written off for
+        // the life of the process. Only a 2xx is stored.
+        let (url, rx) = spawn_server(vec![SERVER_ERROR, OK_BODY]);
+        let u = client();
+        assert!(u.get_json_cached(&url, Freshness::Forever).await.is_ok());
+        assert_eq!(u.cache_stats().entries, 1);
+        assert!(rx.recv().is_ok());
+
+        // A permanent failure leaves nothing behind: the next call has to go
+        // out and try again.
+        let (dead_url, _rx) = spawn_server(vec![NOT_FOUND]);
+        assert!(u.get_json_cached(&dead_url, Freshness::Forever).await.is_err());
+        assert_eq!(u.cache_stats().entries, 1, "ошибка попала в кэш");
+    }
+
+    #[tokio::test]
+    async fn a_document_over_the_size_bound_is_kept_out() {
+        // A catalogue page is under the entry count and over the byte bound,
+        // which is exactly the case the bound exists for: nothing should be
+        // able to grow the cache by asking for a big page with the wrong
+        // freshness.
+        let big = format!("{{\"a\":\"{}\"}}", "x".repeat(CACHE_MAX_BYTES + 16));
+        let (url, rx) = spawn_counting_server(big, 4);
+        let u = client();
+        let first = u.get_json_cached(&url, Freshness::Forever).await.unwrap();
+        assert!(first["a"].as_str().unwrap().len() > CACHE_MAX_BYTES);
+        assert_eq!(served_up_to(&rx, 1), 1);
+
+        let second = u.get_json_cached(&url, Freshness::Forever).await.unwrap();
+        assert_eq!(second["a"], first["a"]);
+        assert_eq!(served_up_to(&rx, 2), 2, "слишком большой ответ всё-таки сохранили");
+        assert_eq!(
+            u.cache_stats(),
+            CacheStats { entries: 0, bytes: 0, hits: 0, misses: 2, refused: 2 }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_post_is_never_answered_from_the_cache() {
+        // Two POSTs to the same URL are two different questions: AniList's
+        // page size, sort and page all live in the body.
+        let (url, rx) = spawn_counting_server("{\"a\":1}".to_string(), 4);
+        let u = client();
+        u.post_json(&url, &serde_json::json!({ "query": "one" })).await.unwrap();
+        u.post_json(&url, &serde_json::json!({ "query": "two" })).await.unwrap();
+        assert_eq!(served_up_to(&rx, 2), 2);
+        assert_eq!(u.cache_stats().entries, 0);
+    }
+
+    #[tokio::test]
+    async fn the_cache_never_grows_past_its_entry_bound() {
+        // Even if every caller asked for reuse, the cache stays small: a
+        // bounded cache that can be talked into growing is not bounded.
+        let u = client();
+        for i in 0..CACHE_MAX_ENTRIES + 8 {
+            let body = format!("{{\"a\":{}}}", i);
+            let (url, _rx) = spawn_counting_server(body, 1);
+            u.get_json_cached(&url, Freshness::Forever).await.unwrap();
+        }
+        let s = u.cache_stats();
+        assert_eq!(s.entries, CACHE_MAX_ENTRIES, "кэш вырос за предел");
+        assert_eq!(s.refused, 8);
+    }
+
+    #[test]
+    fn a_survivor_of_a_poisoned_cache_still_works() {
+        // The cache is a second lock in the request path. A panic while holding
+        // it must not turn into a panic on the next request.
+        let u = client();
+        let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = u.cache.lock().expect("lock");
+            panic!("deliberate panic while holding the cache");
+        }));
+        assert!(held.is_err());
+        assert!(u.cache.lock().unwrap_or_else(|p| p.into_inner()).stats().entries == 0);
     }
 }
 
