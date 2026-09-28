@@ -1,6 +1,19 @@
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a caller waits for a connection before giving up.
+///
+/// Waiting without a bound is what turns a slow query into a hung server:
+/// actix runs a fixed number of worker threads and a thread parked in `get`
+/// serves nothing at all, including the health probe. Ten seconds is longer
+/// than any query here and shorter than the 30 second client timeout, so an
+/// overloaded server answers with an error instead of a dropped connection.
+///
+/// It is also what makes [`PoolError::Timeout`] reachable at all: the parameter
+/// it was written for was only ever passed `false`.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A small fixed-size connection pool for SQLite.
 ///
@@ -80,14 +93,19 @@ impl Pool {
     }
 
 
-    /// Blocks until a connection is free.
+    /// Blocks until a connection is free, for at most [`WAIT_TIMEOUT`].
     pub fn get(&self) -> Result<PooledConn<'_>, PoolError> {
-        self.take(false)
+        self.take(WAIT_TIMEOUT)
     }
 
 
-    fn take(&self, fail_fast: bool) -> Result<PooledConn<'_>, PoolError> {
+    /// Waits up to `deadline` for a connection.
+    ///
+    /// A zero `deadline` never blocks: it is the "try once" mode, used by the
+    /// tests to reach the saturated branch without spending ten seconds in it.
+    fn take(&self, deadline: Duration) -> Result<PooledConn<'_>, PoolError> {
         let mut idle = self.idle.lock().unwrap_or_else(|p| p.into_inner());
+        let started = Instant::now();
         loop {
             if let Some(conn) = idle.pop() {
                 return Ok(PooledConn {
@@ -95,13 +113,26 @@ impl Pool {
                     conn: Some(conn),
                 });
             }
-            if fail_fast {
+            let left = deadline.saturating_sub(started.elapsed());
+            if left.is_zero() {
                 return Err(PoolError::Timeout);
             }
-            idle = self
+            let (guard, waited) = self
                 .ready
-                .wait(idle)
+                .wait_timeout(idle, left)
                 .unwrap_or_else(|p| p.into_inner());
+            idle = guard;
+            if waited.timed_out() {
+                // A connection can be returned in the very instant the wait
+                // expires, so look once more before reporting the timeout.
+                if let Some(conn) = idle.pop() {
+                    return Ok(PooledConn {
+                        pool: self,
+                        conn: Some(conn),
+                    });
+                }
+                return Err(PoolError::Timeout);
+            }
         }
     }
 }
@@ -118,7 +149,7 @@ impl Pool {
 /// out in reverse order of creation, so the configured one is also the last one
 /// anybody gets.
 fn configure(conn: &Connection, first: bool) -> Result<(), rusqlite::Error> {
-    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    conn.busy_timeout(Duration::from_secs(30))?;
     if first {
         // journal_mode is persistent in the database file, so one connection
         // is enough — and one is right, because setting it takes a write lock
@@ -253,6 +284,54 @@ mod tests {
         assert_eq!(p.idle.lock().expect("lock").len(), 0);
         drop(first);
         assert!(waiter.join().expect("waiter"), "второй должен дождаться освобождения");
+    }
+
+    #[test]
+    fn a_saturated_pool_reports_a_timeout_instead_of_waiting_forever() {
+        // The wait has a bound on purpose: a parked actix worker serves
+        // nothing, so an overloaded server has to answer rather than hang.
+        let (_db, p) = pool(1);
+        let held = p.get().expect("связь");
+        let started = Instant::now();
+        let err = p.take(Duration::from_millis(50)).err();
+        assert!(matches!(err, Some(PoolError::Timeout)), "ошибка: {:?}", err);
+        assert!(started.elapsed() < Duration::from_secs(5), "ждал {:?}", started.elapsed());
+        drop(held);
+    }
+
+    #[test]
+    fn a_zero_deadline_never_waits_at_all() {
+        // The "try once" mode, used by the saturated test above so it costs
+        // milliseconds rather than the production ten seconds.
+        let (_db, p) = pool(1);
+        let _held = p.get().expect("связь");
+        let started = Instant::now();
+        assert!(p.take(Duration::ZERO).is_err());
+        assert!(started.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn a_returned_connection_wakes_the_waiter_up() {
+        // `wait_timeout` must still be woken by `notify_one` and not only by
+        // the clock, or every request would pay the full deadline.
+        let (_db, owned) = pool(1);
+        let p = Arc::new(owned);
+        let held = p.get().expect("связь");
+        let other = Arc::clone(&p);
+        let waiter = std::thread::spawn(move || other.take(Duration::from_secs(5)).is_ok());
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        drop(held);
+        assert!(waiter.join().expect("waiter"));
+        assert!(started.elapsed() < Duration::from_secs(4), "проснулся только по таймауту");
+    }
+
+    #[test]
+    fn the_production_wait_is_bounded_and_not_instant() {
+        // Both extremes are wrong: zero would turn every contended read into a
+        // 500, and unbounded would park the worker forever.
+        assert!(WAIT_TIMEOUT > Duration::ZERO);
+        assert!(WAIT_TIMEOUT < Duration::from_secs(30));
     }
 
     #[test]
