@@ -407,60 +407,39 @@ fn parse_recommendations(json: &Option<String>) -> Vec<Recommendation> {
 
 /// Characters and staff share a shape, so one parser covers both. The
 /// difference is which extra field each carries.
+///
+/// The vocabulary is the one `loader::kitsu_cast` writes, not Kitsu's own.
+/// The loader already resolves every name out of `included` and stores
+/// `{name, image, role, voice_actor}`; the raw JSON:API shape
+/// (`{character: {name, image}, voiceActors: [...]}`) is what it reads *before*
+/// storing, and reading that here looked plausible enough to pass its own
+/// tests while leaving the cast and staff sections of the detail page
+/// permanently empty on any real database.
 fn parse_people(json: &Option<String>, with_voice: bool) -> Vec<Person> {
     let Some(s) = json else { return Vec::new() };
     let arr: Vec<Value> = serde_json::from_str(s).unwrap_or_default();
     let mut out = Vec::new();
     for v in arr {
+        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let image = v.get("image").and_then(|i| i.as_str()).map(|s| s.to_string());
         if with_voice {
-            let name = v
-                .get("character")
-                .and_then(|c| c.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
             out.push(Person {
                 name: name.to_string(),
-                image: v
-                    .get("character")
-                    .and_then(|c| c.get("image"))
-                    .and_then(|i| i.get("large"))
-                    .and_then(|l| l.as_str())
-                    .map(|s| s.to_string()),
+                image,
                 role: v.get("role").and_then(|r| r.as_str()).map(|s| s.to_string()),
                 voice_actor: v
-                    .get("voiceActors")
-                    .and_then(|va| va.as_array())
-                    .and_then(|list| {
-                        // Prefer the Japanese VA, fall back to whatever is first.
-                        list.iter()
-                            .find(|x| x.get("language").and_then(|l| l.as_str()) == Some("Japanese"))
-                            .or_else(|| list.first())
-                    })
-                    .and_then(|x| x.get("name"))
+                    .get("voice_actor")
                     .and_then(|n| n.as_str())
                     .map(|s| s.to_string()),
                 positions: None,
             });
         } else {
-            let name = v
-                .get("person")
-                .and_then(|c| c.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
             out.push(Person {
                 name: name.to_string(),
-                image: v
-                    .get("person")
-                    .and_then(|c| c.get("image"))
-                    .and_then(|i| i.get("large"))
-                    .and_then(|l| l.as_str())
-                    .map(|s| s.to_string()),
+                image,
                 role: None,
                 voice_actor: None,
                 positions: v.get("positions").and_then(|p| p.as_array()).map(|a| {
@@ -695,41 +674,105 @@ mod tests {
         assert_eq!(v[0].rating, Some(95));
     }
 
+    /// The cast the loader stores must come back out of this parser.
+    ///
+    /// This is the test whose absence let the two sides drift apart. Both sides
+    /// had tests, both passed, and the detail page showed no cast at all,
+    /// because the writer flattens Kitsu's `included` into `{name, image, role,
+    /// voice_actor}` while the reader was still looking for `{character:
+    /// {name}}`. Reading a real loader payload through a real detail row is
+    /// the only version of this that cannot be satisfied by two fixtures that
+    /// agree with each other and with nothing else.
     #[test]
-    fn characters_prefer_the_japanese_voice_actor() {
-        let v = parse_people(
-            &some(
-                r#"[{"role":"Main","character":{"name":"Eren","image":{"large":"e.jpg"}},
-                     "voiceActors":[{"id":"1","language":"English","name":"VA EN"},
-                                    {"id":"2","language":"Japanese","name":"VA JP"}]},
-                    {"role":"X","character":{"name":""}}]"#,
-            ),
-            true,
-        );
-        assert_eq!(v.len(), 1, "персонаж без имени пропускается");
-        assert_eq!(v[0].name, "Eren");
-        assert_eq!(v[0].image.as_deref(), Some("e.jpg"));
-        assert_eq!(v[0].role.as_deref(), Some("Main"));
-        assert_eq!(v[0].voice_actor.as_deref(), Some("VA JP"));
+    fn the_cast_the_loader_stores_comes_back_out_of_the_detail_parser() {
+        let payload = serde_json::json!({
+            "data": [
+                { "id": "1", "role": "Main",
+                  "attributes": { "name": "Eren Yeager" },
+                  "character": { "name": "Eren Yeager" },
+                  "voiceActors": [
+                    { "id": "10", "language": "English", "name": "VA EN" },
+                    { "id": "11", "language": "Japanese", "name": "VA JP" }
+                  ] },
+                { "id": "2", "role": "Supporting",
+                  "attributes": { "name": "" },
+                  "character": { "name": "" },
+                  "voiceActors": [] }
+            ],
+            "included": [
+                { "type": "characters", "id": "1", "attributes": { "name": "Eren Yeager" } },
+                { "type": "people", "id": "10", "attributes": { "name": "VA EN" } },
+                { "type": "people", "id": "11", "attributes": { "name": "VA JP" } }
+            ]
+        });
+        let stored = crate::loader::kitsu_cast::store_cast(&payload).expect("cast stored");
+
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, is_adult, created_at, updated_at, characters_json)
+             VALUES ('al:1', 0, 1, 1, ?1)",
+            [stored],
+        )
+        .expect("insert");
+        let d = load_detail(&c, "al:1", false, None).expect("detail");
+
+        assert_eq!(d.characters.len(), 1, "запись без имени отфильтрована");
+        assert_eq!(d.characters[0].name, "Eren Yeager");
+        assert_eq!(d.characters[0].role.as_deref(), Some("Main"));
+        // The loader picks the Japanese actor; the parser just reports it.
+        assert_eq!(d.characters[0].voice_actor.as_deref(), Some("VA JP"));
     }
 
     #[test]
-    fn a_character_with_only_a_foreign_voice_actor_still_gets_one() {
-        let v = parse_people(
-            &some(
-                r#"[{"character":{"name":"Eren"},"voiceActors":[{"id":"1","language":"English","name":"VA EN"}]}]"#,
-            ),
-            true,
-        );
-        assert_eq!(v[0].voice_actor.as_deref(), Some("VA EN"));
+    fn the_staff_the_loader_stores_comes_back_out_of_the_detail_parser() {
+        let payload = serde_json::json!({
+            "data": [
+                { "id": "1", "attributes": { "name": "Sasha", "image": { "large": "s.jpg" } } },
+                { "id": "2", "attributes": { "name": "" } }
+            ],
+            "included": [
+                { "type": "people", "id": "1", "attributes": { "name": "Sasha" } }
+            ]
+        });
+        let stored = crate::loader::kitsu_cast::store_staff(&payload).expect("staff stored");
+
+        let c = conn();
+        c.execute(
+            "INSERT INTO anime (uid, is_adult, created_at, updated_at, staff_json)
+             VALUES ('al:1', 0, 1, 1, ?1)",
+            [stored],
+        )
+        .expect("insert");
+        let d = load_detail(&c, "al:1", false, None).expect("detail");
+
+        assert_eq!(d.staff.len(), 1);
+        assert_eq!(d.staff[0].name, "Sasha");
+        assert_eq!(d.staff[0].voice_actor, None);
+    }
+
+    #[test]
+    fn a_character_without_a_voice_actor_still_renders() {
+        // Not every character has a Japanese credit, and an empty section is
+        // worse than one without a name.
+        let v = parse_people(&some(r#"[{"name":"Eren","image":"e.jpg","role":"Main"}]"#), true);
+        assert_eq!(v[0].name, "Eren");
+        assert_eq!(v[0].voice_actor, None);
+    }
+
+    #[test]
+    fn a_stored_cast_is_not_parsed_as_the_raw_kitsu_shape() {
+        // The two vocabularies are close enough to be confused. Pinning the
+        // difference means a future edit cannot quietly go back.
+        let raw = r#"[{"character":{"name":"Eren"},"voiceActors":[{"language":"Japanese","name":"VA"}]}]"#;
+        assert!(parse_people(&some(raw), true).is_empty(), "сырая форма не должна разбираться");
     }
 
     #[test]
     fn staff_carry_positions_and_never_a_voice_actor() {
         let v = parse_people(
             &some(
-                r#"[{"person":{"name":"Sasha","image":{"large":"s.jpg"}},"positions":["Director","Story"]},
-                    {"person":{"name":""}}]"#,
+                r#"[{"name":"Sasha","image":"s.jpg","positions":["Director","Story"]},
+                    {"name":""}]"#,
             ),
             false,
         );
@@ -737,6 +780,17 @@ mod tests {
         assert_eq!(v[0].name, "Sasha");
         assert_eq!(v[0].voice_actor, None);
         assert_eq!(v[0].positions, Some(vec!["Director".to_string(), "Story".to_string()]));
+    }
+
+    #[test]
+    fn a_broken_people_blob_is_an_empty_section_and_not_an_error() {
+        // `kitsu_cast` writes these itself, so a bad value means a row was
+        // half-written. The detail page must still render.
+        for bad in ["not json", "{}", r#""a string""#] {
+            assert!(parse_people(&some(bad), true).is_empty(), "{}", bad);
+            assert!(parse_people(&some(bad), false).is_empty(), "{}", bad);
+        }
+        assert!(parse_people(&None, true).is_empty());
     }
 
     // ------------------------------------------------------- whole-row dump
@@ -843,8 +897,8 @@ mod tests {
                 '[{"url":"https://myanimelist.net/anime/20","site":"MAL"}]',
                 '[{"url":"https://anilist.co/watch/1","site":"anilist"}]',
                 '[{"id":127230,"rating":95,"title":{"romaji":"Gingitsune"}}]',
-                '[{"role":"Main","character":{"name":"Eren"},"voiceActors":[{"language":"Japanese","name":"VA JP"}]}]',
-                '[{"person":{"name":"Sasha"},"positions":["Director"]}]',
+                '[{"name":"Eren","role":"Main","voice_actor":"VA JP"}]',
+                '[{"name":"Sasha","positions":["Director"]}]',
                 42
              )"#,
             [],

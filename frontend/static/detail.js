@@ -273,22 +273,36 @@
     function infoTable() {
         const rows = [];
         const ids = data.ids || {};
+        // The key travels with the link. It used to be recovered from the label
+        // with `label.toLowerCase().slice(0, 3)`, which happens to work for
+        // "Shikimori" and "Kitsu" and gives `ani` / `mya` for AniList and
+        // MyAnimeList — so the two numbers a reader wants most were the two
+        // that never showed.
         const extLinks = [];
-        if (ids.anilist) extLinks.push(['AniList', 'https://anilist.co/anime/' + ids.anilist]);
-        if (ids.mal) extLinks.push(['MyAnimeList', 'https://myanimelist.net/anime/' + ids.mal]);
-        if (ids.shikimori) extLinks.push(['Shikimori', 'https://shikimori.one/animes/' + ids.shikimori + '/']);
-        if (ids.kitsu) extLinks.push(['Kitsu', 'https://kitsu.app/anime/' + ids.kitsu]);
+        for (const link of [
+            { name: 'AniList', key: 'anilist', base: 'https://anilist.co/anime/' },
+            { name: 'MyAnimeList', key: 'mal', base: 'https://myanimelist.net/anime/' },
+            { name: 'Shikimori', key: 'shikimori', base: 'https://shikimori.one/animes/' },
+            { name: 'Kitsu', key: 'kitsu', base: 'https://kitsu.app/anime/' },
+        ]) {
+            if (!ids[link.key]) continue;
+            extLinks.push({
+                name: link.name,
+                href: link.base + ids[link.key] + (link.key === 'shikimori' ? '/' : ''),
+                id: ids[link.key],
+            });
+        }
 
         if (extLinks.length) {
             rows.push(el('tr', {}, [
                 el('th', { text: I18n.t('ids') }),
-                el('td', {}, extLinks.map((pair, i) => el('span', {}, [
+                el('td', {}, extLinks.map((link, i) => el('span', {}, [
                     i ? ' · ' : '',
                     el('a', {
-                        href: pair[1],
+                        href: link.href,
                         target: '_blank',
                         rel: 'noopener noreferrer',
-                        text: pair[0] + ' ' + (ids[pair[0].toLowerCase().slice(0, 3)] || ''),
+                        text: link.name + ' ' + link.id,
                     }),
                 ]))),
             ]));

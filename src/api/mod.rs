@@ -126,11 +126,17 @@ mod tests {
 
     fn seeded(db: &crate::db::testing::TestDb) {
         let c = db.conn();
+        // All four external ids are filled because the detail page looks each
+        // of them up by key, and an absent one is omitted from the response
+        // entirely — a fixture with a hole in it would make that omission look
+        // correct.
         c.execute(
-            "INSERT INTO anime (uid, anilist_id, title_romaji, title_key, title_english,
+            "INSERT INTO anime (uid, anilist_id, mal_id, kitsu_id, shikimori_id,
+                title_romaji, title_key, title_english,
                 title_russian, start_year, score, format, is_adult, episodes, popularity,
                 created_at, updated_at)
-             VALUES ('al:16498', 16498, 'Shingeki no Kyojin', 'shingeki no kyojin', 'Attack on Titan',
+             VALUES ('al:16498', 16498, 16498, 12, 16498, 'Shingeki no Kyojin',
+                'shingeki no kyojin', 'Attack on Titan',
                 'Атака Титанов', 2013, 84, 'TV', 0, 25, 100, 1, 1)",
             [],
         )
@@ -179,6 +185,113 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         let v = body_json(res).await;
         assert_eq!(v["error"]["code"], "not_found");
+    }
+
+    /// Every key `detail.js` reads, checked against a real response.
+    ///
+    /// The frontend is plain JS with no build step, so a field renamed on the
+    /// Rust side disappears silently: `data.score_source` reads `undefined`
+    /// and the page renders with one blank cell. A test can only catch that by
+    /// naming the fields, so the list lives here where a rename in `models.rs`
+    /// is visible in a failing assertion rather than in a browser.
+    #[actix_web::test]
+    async fn the_detail_response_carries_every_field_the_detail_page_reads() {
+        let db = test_db();
+        seeded(&db);
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime/al:16498").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+
+        for key in [
+            "uid", "ids", "title_romaji", "title_english", "title_native", "title_russian",
+            "synonyms", "format", "status", "description", "description_ru", "duration",
+            "episodes", "chapters", "volumes", "country", "is_adult", "season", "season_year",
+            "start_date", "end_date", "score", "score_source", "rating_count", "popularity",
+            "favourites", "trending", "cover_large", "cover_medium", "cover_small",
+            "cover_color", "banner", "trailer", "genres", "tags", "studios", "producers",
+            "licensors", "age_rating", "relations", "external_links", "streaming",
+            "recommendations", "characters", "staff", "updated_at",
+        ] {
+            assert!(v.get(key).is_some(), "detail.js читает data.{}, но в ответе нет", key);
+        }
+
+        // The ids block is looked up by key in the detail page, so a rename
+        // here silently drops a source link rather than failing to load. The
+        // fixture fills all four because an absent id is omitted from the
+        // response on purpose, and then the key cannot be checked at all.
+        for key in ["anilist", "mal", "shikimori", "kitsu"] {
+            assert!(v["ids"][key].is_number(), "в ids нет ключа {}", key);
+        }
+    }
+
+    /// `detail.js` renders each of these nested shapes, so a rename inside one
+    /// of them is just as invisible as one at the top level.
+    #[actix_web::test]
+    async fn every_nested_shape_the_detail_page_renders_keeps_its_field_names() {
+        let db = test_db();
+        seeded(&db);
+        {
+            // The stored blobs are in the *sources'* vocabulary, not the API's:
+            // AniList calls the relation `relationType` and the numeric `id`,
+            // and the spoiler flag `isMediaSpoiler`. Seeding the output shape
+            // instead would make this test pass while every real row parsed to
+            // an empty list.
+            let c = db.conn();
+            c.execute(
+                "UPDATE anime SET
+                     description = 'Text',
+                     external_links_json = '[{\"site\":\"Official\",\"url\":\"https://example.org\",\"type\":\"official\"}]',
+                     streaming_json      = '[{\"site\":\"YouTube\",\"url\":\"https://youtu.be/x\",\"title\":\"Ep\",\"thumbnail\":\"t\"}]',
+                     recommendations_json= '[{\"rating\":90,\"id\":127230,\"title\":{\"romaji\":\"Rec\"},\"format\":\"TV\",\"cover\":\"c\"}]',
+                     relations_json      = '[{\"relationType\":\"PREQUEL\",\"id\":1,\"title\":{\"romaji\":\"Rel\"},\"format\":\"TV\",\"status\":\"FINISHED\",\"cover\":\"c\"}]',
+                     tags_json           = '[{\"name\":\"Time Travel\",\"rank\":42,\"isMediaSpoiler\":false}]',
+                     characters_json     = '[{\"name\":\"Eren\",\"image\":\"i\",\"role\":\"Main\",\"voice_actor\":\"VA\"}]',
+                     staff_json          = '[{\"name\":\"Director\",\"image\":\"i\",\"positions\":[\"Director\"]}]',
+                     classifications_json = '{\"ageRatingGuide\":\"17+\"}',
+                     rating_count = 1000
+                 WHERE uid = 'al:16498'",
+                [],
+            )
+            .expect("seed detail");
+        }
+        let app = app!(&db);
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime/al:16498").to_request(),
+        )
+        .await;
+        let v = body_json(res).await;
+
+        // Each entry is a list of objects on the wire.
+        for (field, keys) in [
+            ("external_links", vec!["site", "url", "type"]),
+            ("streaming", vec!["site", "url", "title", "thumbnail"]),
+            ("recommendations", vec!["uid", "title", "rating", "format", "cover"]),
+            ("relations", vec!["relation", "uid", "title", "format", "status", "cover"]),
+            ("tags", vec!["name", "rank", "spoiler"]),
+            ("characters", vec!["name", "image", "role", "voice_actor"]),
+            ("staff", vec!["name", "image", "positions"]),
+        ] {
+            let rows = v[field].as_array().unwrap_or_else(|| panic!("{} не массив", field));
+            assert!(!rows.is_empty(), "{} пуст, поле не проверено", field);
+            for key in keys {
+                assert!(
+                    rows[0].get(key).is_some(),
+                    "detail.js читает {}[].{}, но в ответе нет",
+                    field,
+                    key
+                );
+            }
+        }
+        // The trailer block and the ids block are objects, not lists.
+        assert!(v["trailer"].is_object() || v["trailer"].is_null(), "trailer: {}", v["trailer"]);
+        assert_eq!(v["age_rating"], "17+");
+        assert_eq!(v["rating_count"], 1000);
     }
 
     #[actix_web::test]

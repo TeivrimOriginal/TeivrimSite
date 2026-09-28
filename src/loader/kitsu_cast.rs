@@ -153,7 +153,13 @@ pub async fn run(ctx: Ctx, limit: i64) -> Result<(), String> {
 }
 
 /// Flattens a JSON:API character list into the flat shape the API serves.
-fn store_cast(value: &serde_json::Value) -> Option<String> {
+/// Flattened into the shape `api::detail::parse_people` reads.
+///
+/// Visible outside this module only so that reader can be tested against a
+/// real payload instead of against a fixture that agrees with it by
+/// construction. That pairing is the whole point: the two sides drifted once
+/// and the detail page silently lost its cast section.
+pub fn store_cast(value: &serde_json::Value) -> Option<String> {
     let data = value.get("data")?.as_array()?;
     let included = value.get("included").and_then(|v| v.as_array());
 
@@ -211,7 +217,9 @@ fn store_cast(value: &serde_json::Value) -> Option<String> {
     serde_json::to_string(&out).ok()
 }
 
-fn store_staff(value: &serde_json::Value) -> Option<String> {
+/// Flattened into the shape `api::detail::parse_people` reads. See
+/// [`store_cast`].
+pub fn store_staff(value: &serde_json::Value) -> Option<String> {
     let data = value.get("data")?.as_array()?;
     let included = value.get("included").and_then(|v| v.as_array());
 
