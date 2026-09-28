@@ -448,3 +448,117 @@ pub async fn favorites_remove(
         Err(e) => e.error_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::testing::test_db;
+    use actix_web::http::StatusCode;
+    use actix_web::test::TestRequest;
+
+    fn req_with(headers: Vec<(&str, &str)>) -> HttpRequest {
+        let mut b = TestRequest::default();
+        for (k, v) in headers {
+            b = b.insert_header((k, v));
+        }
+        b.to_http_request()
+    }
+
+    // ------------------------------------------------------ the token
+
+    #[test]
+    fn the_bearer_header_is_the_token() {
+        assert_eq!(token_of(&req_with(vec![("authorization", "Bearer abc")])), Some("Bearer abc".into()));
+    }
+
+    #[test]
+    fn a_request_without_the_header_has_no_token() {
+        // Read-only endpoints stay usable anonymously, so a missing header is
+        // `None` and not an error.
+        assert_eq!(token_of(&req_with(vec![])), None);
+    }
+
+    #[test]
+    fn the_scheme_is_not_stripped_here() {
+        // `auth::authenticate` owns the prefix rules; this only moves the
+        // string across the async boundary, and a token without "Bearer" has
+        // to survive the trip so it can be rejected there.
+        let r = req_with(vec![("authorization", "Basic abc")]);
+        assert_eq!(token_of(&r), Some("Basic abc".into()));
+    }
+
+    // -------------------------------------------------- the gatekeeper
+
+    #[test]
+    fn a_missing_token_is_unauthorised_rather_than_anonymous() {
+        // The other half of the rule above: where a session is required, no
+        // token is a 401 and never a silent success.
+        let db = test_db();
+        let e = authenticate(&db.handle, None).unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn a_garbage_token_is_unauthorised() {
+        let db = test_db();
+        let e = authenticate(&db.handle, Some("Bearer nope")).unwrap_err();
+        assert_eq!(e.status_code(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn a_real_session_gets_through_the_gate() {
+        let db = test_db();
+        let r = crate::api::auth::register(
+            &db.handle,
+            RegisterBody {
+                username: "user".into(),
+                email: None,
+                password: "password123".into(),
+            },
+        )
+        .expect("register");
+        let uid = authenticate(&db.handle, Some(&format!("Bearer {}", r.token))).expect("uid");
+        assert_eq!(uid, r.user.id);
+    }
+
+    // ----------------------------------------------------- the limiter
+
+    #[tokio::test]
+    async fn the_limiter_allows_up_to_the_budget() {
+        let limiter = Limiter::new(600);
+        let r = req_with(vec![]);
+        for i in 0..5 {
+            assert!(limited(&limiter, &r, 5).await.is_ok(), "запрос {}", i);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_limiter_answers_429_with_a_retry_after() {
+        // The rate limiter is the only thing between a script and a
+        // credential-stuffing run against /api/auth/login, so exceeding the
+        // budget has to be visible to the client as a retry, not a generic
+        // error it cannot act on.
+        let limiter = Limiter::new(600);
+        let r = req_with(vec![]);
+        for _ in 0..3 {
+            limited(&limiter, &r, 3).await.expect("первые три проходят");
+        }
+        let res = limited(&limiter, &r, 3).await.expect_err("четвёртый отклонён");
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(res.headers().contains_key("retry-after"), "нет retry-after");
+        assert!(res.headers().contains_key("content-type"), "ответ не JSON");
+    }
+
+    #[tokio::test]
+    async fn each_client_gets_its_own_budget() {
+        // One shared bucket keyed on nothing would lock out a whole office
+        // behind one noisy machine.
+        let limiter = Limiter::new(600);
+        let a = req_with(vec![("x-forwarded-for", "203.0.113.1")]);
+        let b = req_with(vec![("x-forwarded-for", "203.0.113.2")]);
+        limited(&limiter, &a, 2).await.expect("a");
+        limited(&limiter, &a, 2).await.expect("a");
+        limited(&limiter, &a, 2).await.expect_err("a исчерпал");
+        assert!(limited(&limiter, &b, 2).await.is_ok(), "b затронут чужой бюджетом");
+    }
+}
