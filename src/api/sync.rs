@@ -11,10 +11,7 @@ use crate::error::ApiError;
 use actix_web::{web, HttpRequest, HttpResponse, ResponseError};
 use rusqlite::Connection;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-static RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize)]
 pub struct Task {
@@ -29,7 +26,10 @@ pub struct Task {
     pub age_seconds: Option<i64>,
 }
 
-pub async fn status(db: web::Data<Handle>) -> HttpResponse {
+pub async fn status(
+    db: web::Data<Handle>,
+    ctx: Option<web::Data<Arc<crate::loader::Ctx>>>,
+) -> HttpResponse {
     let db = db.into_inner();
     let result = web::block(move || {
         let conn = db.conn().map_err(|e| ApiError::internal(e.to_string()))?;
@@ -62,10 +62,24 @@ pub async fn status(db: web::Data<Handle>) -> HttpResponse {
             |r| r.get(0),
         )?;
 
+        // The schedule is part of the same answer an operator needs: "running"
+        // without "and again in six hours" is how a dashboard ends up lying.
+        let schedule = match ctx.as_deref() {
+            None => serde_json::json!({ "enabled": false, "reason": "загрузчики отключены" }),
+            Some(c) => {
+                let interval = std::time::Duration::from_secs(c.cfg.sync_interval_secs);
+                serde_json::json!({
+                    "enabled": crate::loader::schedule::enabled(interval),
+                    "interval_secs": c.cfg.sync_interval_secs,
+                })
+            }
+        };
+
         Ok::<serde_json::Value, ApiError>(serde_json::json!({
-            "running": RUNNING.load(Ordering::Relaxed),
+            "running": crate::loader::is_running(),
             "anime": total,
             "with_russian": with_ru,
+            "schedule": schedule,
             "tasks": tasks,
         }))
     })
@@ -115,17 +129,20 @@ pub async fn start(
     if !authorized(&req, admin_token.as_deref()) {
         return ApiError::Forbidden("Для запуска синхронизации нужен X-Admin-Token".into()).error_response();
     }
-    if RUNNING.swap(true, Ordering::SeqCst) {
-        return HttpResponse::Ok().json(serde_json::json!({ "started": false, "reason": "уже выполняется" }));
-    }
     let Some(ctx) = ctx else {
-        RUNNING.store(false, Ordering::Relaxed);
         return ApiError::internal("загрузчики отключены в этой сборке").error_response();
+    };
+    // The claim happens here, not inside the spawned task, so the answer is
+    // about this request rather than about what the task found when it started.
+    // The same flag the refresh timer takes, which is what stops a manual start
+    // from racing the timer into two passes over the same checkpoints.
+    let Some(guard) = crate::loader::try_begin_run() else {
+        return HttpResponse::Ok().json(serde_json::json!({ "started": false, "reason": "уже выполняется" }));
     };
     let ctx = (**ctx).clone();
     tokio::spawn(async move {
-        crate::loader::run_all((*ctx).clone()).await;
-        RUNNING.store(false, Ordering::SeqCst);
+        let _guard = guard;
+        crate::loader::run_claimed((*ctx).clone()).await;
     });
     HttpResponse::Ok().json(serde_json::json!({ "started": true }))
 }

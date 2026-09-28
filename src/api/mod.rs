@@ -91,8 +91,13 @@ mod tests {
     /// A macro rather than a function because `init_service` hands back
     /// `impl Service<Request, ...>` and `actix_http` is not a direct dependency,
     /// so the return type cannot be written out.
+    ///
+    /// The second form adds app data, for the few tests that need the loaders
+    /// to be present; the default form deliberately has no loader context,
+    /// which is the `LOADERS_ON_START=0` deployment.
     macro_rules! app {
-        ($db:expr) => {
+        ($db:expr) => { app!($db, ) };
+        ($db:expr, $($extra:tt)*) => {
             test::init_service(
                 App::new()
                     .app_data(web::Data::new($db.handle.clone()))
@@ -100,6 +105,7 @@ mod tests {
                     .app_data(web::Data::new(crate::api::images::ImageCache::default()))
                     .app_data(web::Data::new(crate::http::ratelimit::Limiter::new(600)))
                     .app_data(web::Data::new(crate::http::ratelimit::Limiter::new(60)))
+                    $($extra)*
                     .configure(|cfg| configure(cfg, 100, &["*".to_string()])),
             )
             .await
@@ -272,6 +278,7 @@ mod tests {
     #[actix_web::test]
     async fn the_sync_status_is_public() {
         // A deployment dashboard watches a long import without credentials.
+        let _serial = crate::loader::RUN_FLAG_LOCK.lock().await;
         let db = test_db();
         let app = app!(&db);
         let res = test::call_service(
@@ -283,6 +290,69 @@ mod tests {
         let v = body_json(res).await;
         assert_eq!(v["running"], false);
         assert_eq!(v["anime"], 0);
+        // No loaders are wired into this test app, so the schedule is off and
+        // says why rather than reporting an interval nobody is honouring.
+        assert_eq!(v["schedule"]["enabled"], false);
+    }
+
+    #[actix_web::test]
+    async fn the_sync_status_says_so_when_a_pass_is_in_flight() {
+        let _serial = crate::loader::RUN_FLAG_LOCK.lock().await;
+        let db = test_db();
+        let app = app!(&db);
+        let _claimed = crate::loader::try_begin_run().expect("флаг синхронизации");
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/sync/status").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["running"], true);
+    }
+
+    #[actix_web::test]
+    async fn the_sync_status_reports_the_refresh_schedule_when_there_is_one() {
+        // "running" on its own is how a dashboard ends up lying: the operator
+        // needs to know there will be another pass without pressing anything.
+        let db = test_db();
+        let ctx = crate::db::testing::test_ctx();
+        let app = app!(&db, .app_data(web::Data::new(std::sync::Arc::new(ctx))));
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/sync/status").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["schedule"]["enabled"], true, "ответ: {}", v);
+        assert!(
+            v["schedule"]["interval_secs"].as_u64().unwrap_or(0) > 0,
+            "интервал не показан: {}",
+            v
+        );
+    }
+
+    #[actix_web::test]
+    async fn starting_a_sync_while_one_is_running_is_refused_rather_than_queued() {
+        // Two passes over the same checkpoints would double the request rate
+        // against APIs that answer 429, so the second one is told no.
+        let _serial = crate::loader::RUN_FLAG_LOCK.lock().await;
+        let db = test_db();
+        let ctx = crate::db::testing::test_ctx();
+        let app = app!(&db, .app_data(web::Data::new(std::sync::Arc::new(ctx))));
+        let _claimed = crate::loader::try_begin_run().expect("флаг синхронизации");
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/sync/start")
+                .insert_header(("x-admin-token", "admin-token"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["started"], false, "ответ: {}", v);
+        assert_eq!(v["reason"], "уже выполняется");
     }
 
     #[actix_web::test]

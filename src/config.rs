@@ -13,6 +13,14 @@ pub struct Config {
     pub pool_size: u32,
     /// Start the background catalogue sync workers on boot.
     pub loaders_on_start: bool,
+    /// How often the catalogue is rebuilt from scratch on its own, seconds.
+    /// `0` means never; the sync then only happens on boot or by hand.
+    ///
+    /// A pass costs a few thousand requests across the three sources, so the
+    /// default is a full day rather than an hour. There is no "changed since"
+    /// filter in any of the three APIs, which is what makes a refresh a full
+    /// re-import rather than a delta.
+    pub sync_interval_secs: u64,
     /// AniList OAuth client id. Supplying one raises the rate limit from
     /// 30 to 90 requests per minute.
     pub anilist_client_id: Option<String>,
@@ -62,6 +70,7 @@ impl Config {
             loaders_on_start: var("LOADERS_ON_START")
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),
+            sync_interval_secs: parse_or("SYNC_INTERVAL_SECS", 86_400u64).clamp(0, 30 * 86_400),
             anilist_client_id: var("ANILIST_CLIENT_ID"),
             sync_page_size: parse_or("SYNC_PAGE_SIZE", 50).clamp(1, 50),
             kitsu_enrich_limit: parse_or("KITSU_ENRICH_LIMIT", 2_000i64).clamp(0, 50_000),

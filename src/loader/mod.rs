@@ -14,6 +14,7 @@ pub mod anilist;
 pub mod genres;
 pub mod kitsu;
 pub mod kitsu_cast;
+pub mod schedule;
 pub mod shikimori;
 
 use crate::config::Config;
@@ -35,6 +36,54 @@ type Stage = (
 
 /// Set to true to ask a running sync to stop after the current page.
 pub static ABORT: AtomicBool = AtomicBool::new(false);
+
+/// Whether a pass over the sources is in flight.
+///
+/// There are three ways to start one — boot, the refresh timer and the admin
+/// endpoint — and none of them used to know about the others. Two passes at
+/// once do not fail loudly: they walk the same `(source, task)` checkpoints, so
+/// each overwrites the other's page counter, and they double the request rate
+/// against APIs that answer 429 when you ask twice as often. One flag, claimed
+/// before the run and released after, is enough.
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Serialises the tests that read or write [`RUNNING`].
+///
+/// The flag is process-wide and the test harness runs tests in parallel, so
+/// without this a test that claims a pass makes an unrelated assertion about
+/// `running == false` fail at random. Every test that touches the flag takes
+/// this, including the endpoint tests that read it.
+///
+/// An async mutex rather than `std::sync::Mutex` because the tests that use it
+/// hold it across an `await` — a request that goes out and comes back.
+#[cfg(test)]
+pub(crate) static RUN_FLAG_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+pub fn is_running() -> bool {
+    RUNNING.load(Ordering::SeqCst)
+}
+
+/// Releases the run flag when dropped.
+///
+/// Dropping rather than an explicit call at the end of the run is what keeps a
+/// panic inside a loader from leaving the process permanently unable to sync.
+#[must_use = "the run flag is released when the guard goes out of scope"]
+pub struct RunGuard;
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Claims the right to run. `None` means a pass is already in flight.
+pub fn try_begin_run() -> Option<RunGuard> {
+    RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| RunGuard)
+}
 
 pub fn request_abort() {
     ABORT.store(true, Ordering::Relaxed);
@@ -113,7 +162,22 @@ impl Ctx {
 
 /// Runs every enabled source to completion, then rebuilds derived data.
 /// Safe to call again at any time: each stage resumes from its checkpoint.
-pub async fn run_all(ctx: Ctx) {
+///
+/// Skips the run if one is already in flight, and says so. This is the entry
+/// point for the callers that do not care whether they won the race; the admin
+/// endpoint, which has to answer the question, claims the run itself and calls
+/// [`run_claimed`].
+pub async fn run_all(ctx: Ctx) -> bool {
+    let Some(_guard) = try_begin_run() else {
+        log_info("=== синхронизация уже выполняется, запуск пропущен ===");
+        return false;
+    };
+    run_claimed(ctx).await;
+    true
+}
+
+/// The body of a pass, for a caller that already holds the [`RunGuard`].
+pub async fn run_claimed(ctx: Ctx) {
     clear_abort();
 
     let started = std::time::Instant::now();
@@ -618,5 +682,75 @@ mod tests {
             };
             assert_eq!(last, want, "подряд сбоев: {}", length);
         }
+    }
+
+    // --------------------------------------------------------- the run flag
+
+    /// A context good enough to satisfy the signature of a run that must not
+    /// start. The database file is leaked on purpose: the pool inside the
+    /// handle is still open when the temporary path would otherwise be removed.
+    #[cfg(test)]
+    fn idle_ctx() -> Ctx {
+        crate::db::testing::test_ctx()
+    }
+
+    #[tokio::test]
+    async fn only_one_run_can_be_claimed_at_a_time() {
+        let _serial = RUN_FLAG_LOCK.lock().await;
+        let first = try_begin_run().expect("первый должен получить флаг");
+        assert!(is_running());
+        assert!(
+            try_begin_run().is_none(),
+            "второй претендент не должен получить флаг"
+        );
+        drop(first);
+        assert!(!is_running(), "флаг не освобождён");
+        assert!(try_begin_run().is_some(), "после освобождения флаг снова доступен");
+    }
+
+    #[tokio::test]
+    async fn the_flag_is_released_even_when_a_run_panics() {
+        // A panic inside a loader is an ordinary event — one bad row, one
+        // unexpected HTTP status. If it left the flag set, the process would
+        // never sync again without a restart.
+        let _serial = RUN_FLAG_LOCK.lock().await;
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = try_begin_run().expect("флаг");
+            panic!("имитация падения внутри загрузчика");
+        }));
+        assert!(crashed.is_err());
+        assert!(!is_running(), "падение оставило флаг занятым");
+        assert!(try_begin_run().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_second_run_is_skipped_while_one_is_in_flight() {
+        // The boot pass, the refresh timer and the admin endpoint all call
+        // this. Two passes at once walk the same checkpoints and double the
+        // request rate against APIs that answer 429 to it.
+        let _serial = RUN_FLAG_LOCK.lock().await;
+        let _held = try_begin_run().expect("флаг");
+        assert!(!run_all(idle_ctx()).await, "второй проход должен быть пропущен");
+        assert!(is_running(), "пропущенный проход не должен снимать чужой флаг");
+    }
+
+    #[tokio::test]
+    async fn a_run_clears_a_leftover_abort_before_it_starts_anything() {
+        // An abort left over from a previous pass would cut the next one short
+        // at its first page, and the flag is process-wide, so this is exactly
+        // the state a restart is not needed to get into.
+        let _serial = RUN_FLAG_LOCK.lock().await;
+        request_abort();
+        assert!(aborted());
+
+        // `timeout` is how the first poll is taken: `clear_abort` is the first
+        // statement of the pass, so it has run by the time the future is
+        // dropped, and the pass never gets far enough to touch a source.
+        let _ = tokio::time::timeout(
+            Duration::from_millis(1),
+            run_claimed(idle_ctx()),
+        )
+        .await;
+        assert!(!aborted(), "проход не снял флаг прерывания");
     }
 }

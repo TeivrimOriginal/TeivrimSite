@@ -516,6 +516,35 @@ pub fn mark_error(conn: &Connection, source: &str, task: &str, err: &str) {
     }
 }
 
+/// Forgets that any task ever finished, so the next pass starts from page one
+/// of every sort again.
+///
+/// A checkpoint is a resume point, and that is exactly what a refresh must not
+/// keep: left as it is, a finished task is skipped and the "refresh" walks
+/// straight to the end of the catalogue without asking the sources a single
+/// question. `last_page` is rewound for the same reason — with `finished` clear
+/// and the page counter at 1800, a loader would resume at 1801 and import
+/// nothing.
+///
+/// The `run` rows are left alone: they only record when a source was last
+/// entered, and `mark_started` overwrites them anyway.
+///
+/// Returns the number of tasks reopened.
+pub fn rewind(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    let now = now_ts();
+    conn.execute(
+        "UPDATE sync_state
+            SET finished = 0,
+                last_page = 0,
+                total_saved = 0,
+                last_error = NULL,
+                ended_at = NULL,
+                updated_at = ?1
+          WHERE task <> 'run'",
+        rusqlite::params![now],
+    )
+}
+
 // ==================================================================
 // Tests
 // ==================================================================
@@ -585,6 +614,23 @@ pub(crate) mod testing {
             handle: Db::open(&path, 2).unwrap_or_else(|e| panic!("Db::open: {}", e)),
             path,
         }
+    }
+
+    /// A loader context over a throwaway catalogue, for the code paths that
+    /// take a `Ctx` but are not supposed to reach a source.
+    ///
+    /// The `TestDb` is deliberately leaked: the pool inside the handle still
+    /// has the file open, and on Windows that keeps the temporary file from
+    /// being removed at all.
+    pub(crate) fn test_ctx() -> crate::loader::Ctx {
+        let db = test_db();
+        let handle = db.handle.clone();
+        std::mem::forget(db);
+        let cfg = std::sync::Arc::new(crate::config::Config::from_env());
+        let sources = std::sync::Arc::new(
+            crate::sources::Sources::new(&cfg).unwrap_or_else(|e| panic!("Sources: {}", e)),
+        );
+        crate::loader::Ctx { db: handle, sources, cfg }
     }
 }
 

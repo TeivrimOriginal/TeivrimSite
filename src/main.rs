@@ -88,6 +88,15 @@ async fn main() -> std::io::Result<()> {
         tokio::spawn(async move {
             loader::run_all((*bg).clone()).await;
         });
+
+        // Without this the catalogue is whatever the boot pass found, forever.
+        // The timer is started after the boot pass is queued, not after it
+        // finishes: both take the same run flag, so whichever wakes up first
+        // does the work and the other one skips.
+        loader::schedule::spawn(
+            (*ctx).clone(),
+            Duration::from_secs(cfg.sync_interval_secs),
+        );
     } else {
         log_info("[sync] загрузчики отключены (LOADERS_ON_START=0)");
     }
