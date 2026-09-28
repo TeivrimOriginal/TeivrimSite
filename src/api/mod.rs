@@ -430,8 +430,22 @@ mod tests {
                 .to_request(),
         )
         .await;
+        assert_eq!(res.status(), StatusCode::OK);
         let v = body_json(res).await;
-        assert_eq!(v[0]["uid"], "al:16498", "запись приклеена к каталогу");
+        // The envelope, not a bare array: the client renders the watchlist and
+        // the catalogue through one code path that reads `items` and `total`.
+        assert_eq!(v["items"][0]["uid"], "al:16498", "запись приклеена к каталогу");
+        assert_eq!(v["total"], 1, "ответ: {}", v);
+        assert_eq!(v["has_more"], false);
+        // The watchlist state travels with the row, which is how a card in the
+        // list knows it is already starred.
+        assert_eq!(v["items"][0]["library"]["status"], "watching");
+        assert_eq!(v["items"][0]["library"]["score"], 9);
+        // The catalogue fields are flattened onto the entry, so a card renders
+        // without a second request.
+        assert_eq!(v["items"][0]["title_english"], "Attack on Titan");
+        assert_eq!(v["items"][0]["score"], 84);
+        assert_eq!(v["items"][0]["episodes"], 25);
 
         // The catalogue filter uses the same session.
         let res = test::call_service(

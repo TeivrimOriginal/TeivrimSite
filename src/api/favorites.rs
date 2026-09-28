@@ -188,19 +188,13 @@ pub struct ListEntry {
     pub library: LibraryEntry,
 }
 
-pub fn list_with_anime(
-    conn: &Connection,
-    user_id: i64,
-    filter: &ListFilter,
-) -> ApiResult<Vec<ListEntry>> {
-    // The watchlist columns have to be in the projection too: the row mapper
-    // reads them right after the summary columns, and an out-of-range index
-    // would make every row fail and the list come back empty.
-    let mut sql = format!(
-        "SELECT {}, f.status, f.is_favorite, f.score, f.progress, f.episodes, f.notes, f.updated_at \
-         FROM favorites f JOIN anime a ON a.uid = f.uid WHERE f.user_id = ?1",
-        crate::api::catalog::summary_columns()
-    );
+/// The `WHERE` of the watchlist query, with the values that go with it.
+///
+/// The list and the count have to agree exactly — a total that does not match
+/// the rows it counts is how a client ends up showing "12 of 12" and then
+/// stopping, or an empty page that claims there is more.
+fn filter_clause(user_id: i64, filter: &ListFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut sql = String::from(" WHERE f.user_id = ?");
     let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(user_id)];
     if let Some(s) = filter.status.as_deref().filter(|s| !s.is_empty()) {
         sql.push_str(" AND f.status = ?");
@@ -209,12 +203,43 @@ pub fn list_with_anime(
     if matches!(filter.favorites.as_deref(), Some("1" | "true" | "yes")) {
         sql.push_str(" AND f.is_favorite = 1");
     }
+    (sql, values)
+}
+
+pub fn list_with_anime(
+    conn: &Connection,
+    user_id: i64,
+    filter: &ListFilter,
+) -> ApiResult<Paged<ListEntry>> {
+    // The envelope is the same `Paged` the catalogue answers with, and it has
+    // to be: the frontend renders both through one code path that reads
+    // `items` and `total`. Answering a bare array here made the watchlist tab
+    // read `undefined` for both and render as empty no matter what was saved.
+    let limit = filter.limit.unwrap_or(200).clamp(1, 1000);
+    let offset = filter.offset.unwrap_or(0).max(0);
+    let (where_, values) = filter_clause(user_id, filter);
+
+    let total: i64 = {
+        let sql = format!("SELECT COUNT(*) FROM favorites f{}", where_);
+        conn.query_row(&sql, rusqlite::params_from_iter(values.iter()), |r| r.get(0))?
+    };
+
+    // The watchlist columns have to be in the projection too: the row mapper
+    // reads them right after the summary columns, and an out-of-range index
+    // would make every row fail and the list come back empty.
+    let mut sql = format!(
+        "SELECT {}, f.status, f.is_favorite, f.score, f.progress, f.episodes, f.notes, f.updated_at \
+         FROM favorites f JOIN anime a ON a.uid = f.uid{}",
+        crate::api::catalog::summary_columns(),
+        where_
+    );
     sql.push_str(" ORDER BY f.is_favorite DESC, f.updated_at DESC LIMIT ? OFFSET ?");
-    values.push(Box::new(filter.limit.unwrap_or(200).clamp(1, 1000)));
-    values.push(Box::new(filter.offset.unwrap_or(0).max(0)));
+    let mut all = values;
+    all.push(Box::new(limit));
+    all.push(Box::new(offset));
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), |r| {
+    let rows = stmt.query_map(rusqlite::params_from_iter(all.iter()), |r| {
         let item = crate::api::catalog::summary_from_row(r)?;
         let library = LibraryEntry {
             uid: item.uid.clone(),
@@ -231,16 +256,28 @@ pub fn list_with_anime(
 
     // Surface row errors instead of dropping them: a silent empty list is
     // indistinguishable from "you have nothing saved".
-    let mut out = Vec::new();
+    let mut items = Vec::new();
     for r in rows {
         match r {
-            Ok(v) => out.push(v),
+            Ok(v) => items.push(v),
             Err(e) => {
                 crate::error::log_error(&format!("[api] строка списка пропущена: {}", e));
             }
         }
     }
-    Ok(out)
+
+    let total_pages = if limit > 0 { (total + limit - 1) / limit } else { 0 };
+    let has_more = items.len() as i64 == limit && offset + limit < total;
+    // One-based, the same convention `Paged` uses for the catalogue.
+    let page = u32::try_from(offset / limit + 1).unwrap_or(1);
+    Ok(Paged {
+        items,
+        page,
+        per_page: limit,
+        total,
+        total_pages,
+        has_more,
+    })
 }
 
 #[cfg(test)]
@@ -507,6 +544,15 @@ mod tests {
 
     // --------------------------------------------------------------- list
 
+    fn filter(status: Option<&str>, favorites: Option<&str>, limit: Option<i64>, offset: Option<i64>) -> ListFilter {
+        ListFilter {
+            status: status.map(|s| s.to_string()),
+            favorites: favorites.map(|s| s.to_string()),
+            limit,
+            offset,
+        }
+    }
+
     #[test]
     fn the_list_joins_the_catalogue_metadata() {
         // One request instead of N: the watchlist screen needs a title and a
@@ -518,11 +564,85 @@ mod tests {
             .unwrap();
         upsert(&db.handle, uid, up("al:1")).unwrap();
 
-        let rows = list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].item.uid, "al:1");
-        assert_eq!(rows[0].item.title, "Shingeki no Kyojin");
-        assert_eq!(rows[0].library.status, "planned");
+        let page = list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].item.uid, "al:1");
+        assert_eq!(page.items[0].item.title, "Shingeki no Kyojin");
+        assert_eq!(page.items[0].library.status, "planned");
+    }
+
+    #[test]
+    fn the_list_answers_with_the_same_envelope_as_the_catalogue() {
+        // The bug this pins down: the endpoint used to answer with a bare
+        // array. The frontend renders the watchlist and the catalogue through
+        // one code path that reads `items` and `total`, so on an array both
+        // were `undefined` and the watchlist always rendered as empty.
+        let db = test_db();
+        let uid = seed(&db);
+        upsert(&db.handle, uid, up("al:1")).unwrap();
+
+        let v = serde_json::to_value(
+            list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(v.is_object(), "ответ должен быть объектом, а не массивом: {}", v);
+        for key in ["items", "page", "per_page", "total", "total_pages", "has_more"] {
+            assert!(v.get(key).is_some(), "нет поля {} в {}", key, v);
+        }
+        assert_eq!(v["items"][0]["library"]["uid"], "al:1");
+    }
+
+    #[test]
+    fn an_empty_watchlist_is_an_empty_page_and_not_a_missing_one() {
+        // `items: []` with `total: 0` is what the client turns into "you have
+        // nothing saved". Anything else and it either shows a spinner forever
+        // or claims there is more.
+        let db = test_db();
+        let uid = seed(&db);
+        let v = serde_json::to_value(
+            list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["items"], json!([]));
+        assert_eq!(v["total"], 0);
+        assert_eq!(v["total_pages"], 0);
+        assert_eq!(v["has_more"], false);
+    }
+
+    #[test]
+    fn the_total_counts_the_filtered_list_and_not_the_whole_watchlist() {
+        // A total that ignores the filter is how a client ends up paging
+        // through empty pages looking for entries it already showed.
+        let db = test_db();
+        let uid = seed(&db);
+        let mut a = up("al:1");
+        a.status = Some("watching".into());
+        upsert(&db.handle, uid, a).unwrap();
+        upsert(&db.handle, uid, up("al:2")).unwrap();
+
+        let page = list_with_anime(&db.conn(), uid, &filter(Some("watching"), None, None, None)).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.total, 1, "всего в списке две записи");
+
+        let all = list_with_anime(&db.conn(), uid, &filter(None, None, None, None)).unwrap();
+        assert_eq!(all.total, 2);
+    }
+
+    #[test]
+    fn the_page_numbers_follow_the_offset() {
+        // The client pages by offset, so the envelope has to say where it is
+        // in the list rather than always claiming page one.
+        let db = test_db();
+        let uid = seed(&db);
+        for u in ["al:1", "al:2"] {
+            upsert(&db.handle, uid, up(u)).unwrap();
+        }
+        let first = list_with_anime(&db.conn(), uid, &filter(None, None, Some(1), Some(0))).unwrap();
+        assert_eq!((first.page, first.per_page, first.total_pages, first.has_more), (1, 1, 2, true));
+
+        let second = list_with_anime(&db.conn(), uid, &filter(None, None, Some(1), Some(1))).unwrap();
+        assert_eq!((second.page, second.has_more), (2, false));
+        assert_ne!(first.items[0].item.uid, second.items[0].item.uid);
     }
 
     #[test]
@@ -535,23 +655,12 @@ mod tests {
         upsert(&db.handle, uid, a).unwrap();
         upsert(&db.handle, uid, up("al:2")).unwrap();
 
-        let by_status = ListFilter {
-            status: Some("watching".into()),
-            favorites: None,
-            limit: None,
-            offset: None,
-        };
-        let rows = list_with_anime(&db.conn(), uid, &by_status).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].item.uid, "al:1");
+        let page = list_with_anime(&db.conn(), uid, &filter(Some("watching"), None, None, None)).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].item.uid, "al:1");
 
-        let starred = ListFilter {
-            status: None,
-            favorites: Some("1".into()),
-            limit: None,
-            offset: None,
-        };
-        assert_eq!(list_with_anime(&db.conn(), uid, &starred).unwrap().len(), 1);
+        let starred = list_with_anime(&db.conn(), uid, &filter(None, Some("1"), None, None)).unwrap();
+        assert_eq!(starred.items.len(), 1);
     }
 
     #[test]
@@ -559,8 +668,9 @@ mod tests {
         let db = test_db();
         let uid = seed(&db);
         upsert(&db.handle, uid, up("al:1")).unwrap();
-        let rows = list_with_anime(&db.conn(), 999, &ListFilter::default()).unwrap();
-        assert!(rows.is_empty());
+        let page = list_with_anime(&db.conn(), 999, &ListFilter::default()).unwrap();
+        assert!(page.items.is_empty());
+        assert_eq!(page.total, 0);
     }
 
     #[test]
@@ -568,13 +678,10 @@ mod tests {
         let db = test_db();
         let uid = seed(&db);
         upsert(&db.handle, uid, up("al:1")).unwrap();
-        let huge = ListFilter {
-            status: None,
-            favorites: None,
-            limit: Some(100_000),
-            offset: Some(-5),
-        };
-        // A negative offset would make SQLite read from the end of the table.
-        assert_eq!(list_with_anime(&db.conn(), uid, &huge).unwrap().len(), 1);
+        // A negative offset would make SQLite read from the end of the table,
+        // and an unbounded limit would let one request pull the whole list.
+        let page = list_with_anime(&db.conn(), uid, &filter(None, None, Some(100_000), Some(-5))).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.per_page, 1_000);
     }
 }
