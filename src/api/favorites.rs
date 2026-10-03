@@ -49,7 +49,6 @@ pub struct ListFilter {
     pub offset: Option<i64>,
 }
 
-
 pub fn upsert(db: &Handle, user_id: i64, body: UpsertBody) -> ApiResult<LibraryEntry> {
     if body.uid.is_empty() || body.uid.len() > 64 {
         return Err(ApiError::bad("Некорректный uid"));
@@ -74,7 +73,11 @@ pub fn upsert(db: &Handle, user_id: i64, body: UpsertBody) -> ApiResult<LibraryE
     // Refuse to track something that is not in the catalogue, otherwise a typo
     // silently creates an entry that can never be displayed.
     let exists: bool = conn
-        .query_row("SELECT 1 FROM anime WHERE uid = ?1", params![body.uid], |_| Ok(true))
+        .query_row(
+            "SELECT 1 FROM anime WHERE uid = ?1",
+            params![body.uid],
+            |_| Ok(true),
+        )
         .optional()
         .map_err(ApiError::from)?
         .unwrap_or(false);
@@ -83,9 +86,11 @@ pub fn upsert(db: &Handle, user_id: i64, body: UpsertBody) -> ApiResult<LibraryE
     }
 
     let episodes: Option<i64> = conn
-        .query_row("SELECT episodes FROM anime WHERE uid = ?1", params![body.uid], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT episodes FROM anime WHERE uid = ?1",
+            params![body.uid],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(ApiError::from)?
         .flatten();
@@ -144,7 +149,6 @@ pub fn remove(db: &Handle, user_id: i64, uid: &str) -> ApiResult<()> {
     Ok(())
 }
 
-
 /// Per-status counts for the watchlist tabs.
 #[derive(Debug, Serialize)]
 pub struct Counts {
@@ -167,7 +171,16 @@ pub fn counts(conn: &Connection, user_id: i64) -> ApiResult<Counts> {
             COUNT(*)
          FROM favorites WHERE user_id = ?1",
         params![user_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        },
     )?;
     Ok(Counts {
         watching: row.0,
@@ -221,7 +234,9 @@ pub fn list_with_anime(
 
     let total: i64 = {
         let sql = format!("SELECT COUNT(*) FROM favorites f{}", where_);
-        conn.query_row(&sql, rusqlite::params_from_iter(values.iter()), |r| r.get(0))?
+        conn.query_row(&sql, rusqlite::params_from_iter(values.iter()), |r| {
+            r.get(0)
+        })?
     };
 
     // The watchlist columns have to be in the projection too: the row mapper
@@ -266,7 +281,11 @@ pub fn list_with_anime(
         }
     }
 
-    let total_pages = if limit > 0 { (total + limit - 1) / limit } else { 0 };
+    let total_pages = if limit > 0 {
+        (total + limit - 1) / limit
+    } else {
+        0
+    };
     let has_more = items.len() as i64 == limit && offset + limit < total;
     // One-based, the same convention `Paged` uses for the catalogue.
     let page = u32::try_from(offset / limit + 1).unwrap_or(1);
@@ -292,10 +311,16 @@ mod tests {
     fn seed(test_db: &crate::db::testing::TestDb) -> i64 {
         {
             let c = test_db.conn();
-            c.execute("INSERT INTO anime (uid, episodes, is_adult, created_at) VALUES ('al:1', 25, 0, 1)", [])
-                .unwrap();
-            c.execute("INSERT INTO anime (uid, episodes, is_adult, created_at) VALUES ('al:2', 12, 0, 1)", [])
-                .unwrap();
+            c.execute(
+                "INSERT INTO anime (uid, episodes, is_adult, created_at) VALUES ('al:1', 25, 0, 1)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO anime (uid, episodes, is_adult, created_at) VALUES ('al:2', 12, 0, 1)",
+                [],
+            )
+            .unwrap();
             c.execute("INSERT INTO users (username, username_key, password_hash, created_at) VALUES ('u','u','h',1)", [])
                 .unwrap();
         }
@@ -344,7 +369,8 @@ mod tests {
         // The counter-example, stated as a test: with `Option<i64>` both
         // documents below parse to None and "clear the score" becomes
         // impossible to express.
-        let cleared: UpsertBody = serde_json::from_value(json!({ "uid": "al:1", "score": null })).unwrap();
+        let cleared: UpsertBody =
+            serde_json::from_value(json!({ "uid": "al:1", "score": null })).unwrap();
         let absent: UpsertBody = serde_json::from_value(json!({ "uid": "al:1" })).unwrap();
         assert_ne!(cleared.score, absent.score);
     }
@@ -465,7 +491,9 @@ mod tests {
         let db = test_db();
         let uid = seed(&db);
         upsert(&db.handle, uid, up("al:1")).unwrap();
-        db.conn().execute("UPDATE anime SET episodes = 30 WHERE uid = 'al:1'", []).unwrap();
+        db.conn()
+            .execute("UPDATE anime SET episodes = 30 WHERE uid = 'al:1'", [])
+            .unwrap();
         let e = upsert(&db.handle, uid, up("al:1")).unwrap();
         assert_eq!(e.episodes, Some(30));
     }
@@ -503,7 +531,9 @@ mod tests {
         upsert(&db.handle, uid, up("al:1")).unwrap();
         let e = remove(&db.handle, 999, "al:1").unwrap_err();
         assert_eq!(e.status_code(), StatusCode::NOT_FOUND);
-        assert!(load_library_entry(&db.conn(), uid, "al:1").unwrap().is_some());
+        assert!(load_library_entry(&db.conn(), uid, "al:1")
+            .unwrap()
+            .is_some());
     }
 
     // ------------------------------------------------------------- counts
@@ -539,12 +569,27 @@ mod tests {
         let db = test_db();
         let uid = seed(&db);
         let c = counts(&db.conn(), uid).unwrap();
-        assert_eq!((c.watching, c.planned, c.completed, c.dropped, c.favorites, c.total), (0, 0, 0, 0, 0, 0));
+        assert_eq!(
+            (
+                c.watching,
+                c.planned,
+                c.completed,
+                c.dropped,
+                c.favorites,
+                c.total
+            ),
+            (0, 0, 0, 0, 0, 0)
+        );
     }
 
     // --------------------------------------------------------------- list
 
-    fn filter(status: Option<&str>, favorites: Option<&str>, limit: Option<i64>, offset: Option<i64>) -> ListFilter {
+    fn filter(
+        status: Option<&str>,
+        favorites: Option<&str>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> ListFilter {
         ListFilter {
             status: status.map(|s| s.to_string()),
             favorites: favorites.map(|s| s.to_string()),
@@ -560,7 +605,10 @@ mod tests {
         let db = test_db();
         let uid = seed(&db);
         db.conn()
-            .execute("UPDATE anime SET title_romaji = 'Shingeki no Kyojin' WHERE uid = 'al:1'", [])
+            .execute(
+                "UPDATE anime SET title_romaji = 'Shingeki no Kyojin' WHERE uid = 'al:1'",
+                [],
+            )
             .unwrap();
         upsert(&db.handle, uid, up("al:1")).unwrap();
 
@@ -581,12 +629,22 @@ mod tests {
         let uid = seed(&db);
         upsert(&db.handle, uid, up("al:1")).unwrap();
 
-        let v = serde_json::to_value(
-            list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap(),
-        )
-        .unwrap();
-        assert!(v.is_object(), "ответ должен быть объектом, а не массивом: {}", v);
-        for key in ["items", "page", "per_page", "total", "total_pages", "has_more"] {
+        let v =
+            serde_json::to_value(list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap())
+                .unwrap();
+        assert!(
+            v.is_object(),
+            "ответ должен быть объектом, а не массивом: {}",
+            v
+        );
+        for key in [
+            "items",
+            "page",
+            "per_page",
+            "total",
+            "total_pages",
+            "has_more",
+        ] {
             assert!(v.get(key).is_some(), "нет поля {} в {}", key, v);
         }
         assert_eq!(v["items"][0]["library"]["uid"], "al:1");
@@ -599,10 +657,9 @@ mod tests {
         // or claims there is more.
         let db = test_db();
         let uid = seed(&db);
-        let v = serde_json::to_value(
-            list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap(),
-        )
-        .unwrap();
+        let v =
+            serde_json::to_value(list_with_anime(&db.conn(), uid, &ListFilter::default()).unwrap())
+                .unwrap();
         assert_eq!(v["items"], json!([]));
         assert_eq!(v["total"], 0);
         assert_eq!(v["total_pages"], 0);
@@ -620,7 +677,8 @@ mod tests {
         upsert(&db.handle, uid, a).unwrap();
         upsert(&db.handle, uid, up("al:2")).unwrap();
 
-        let page = list_with_anime(&db.conn(), uid, &filter(Some("watching"), None, None, None)).unwrap();
+        let page =
+            list_with_anime(&db.conn(), uid, &filter(Some("watching"), None, None, None)).unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.total, 1, "всего в списке две записи");
 
@@ -637,10 +695,20 @@ mod tests {
         for u in ["al:1", "al:2"] {
             upsert(&db.handle, uid, up(u)).unwrap();
         }
-        let first = list_with_anime(&db.conn(), uid, &filter(None, None, Some(1), Some(0))).unwrap();
-        assert_eq!((first.page, first.per_page, first.total_pages, first.has_more), (1, 1, 2, true));
+        let first =
+            list_with_anime(&db.conn(), uid, &filter(None, None, Some(1), Some(0))).unwrap();
+        assert_eq!(
+            (
+                first.page,
+                first.per_page,
+                first.total_pages,
+                first.has_more
+            ),
+            (1, 1, 2, true)
+        );
 
-        let second = list_with_anime(&db.conn(), uid, &filter(None, None, Some(1), Some(1))).unwrap();
+        let second =
+            list_with_anime(&db.conn(), uid, &filter(None, None, Some(1), Some(1))).unwrap();
         assert_eq!((second.page, second.has_more), (2, false));
         assert_ne!(first.items[0].item.uid, second.items[0].item.uid);
     }
@@ -655,11 +723,13 @@ mod tests {
         upsert(&db.handle, uid, a).unwrap();
         upsert(&db.handle, uid, up("al:2")).unwrap();
 
-        let page = list_with_anime(&db.conn(), uid, &filter(Some("watching"), None, None, None)).unwrap();
+        let page =
+            list_with_anime(&db.conn(), uid, &filter(Some("watching"), None, None, None)).unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].item.uid, "al:1");
 
-        let starred = list_with_anime(&db.conn(), uid, &filter(None, Some("1"), None, None)).unwrap();
+        let starred =
+            list_with_anime(&db.conn(), uid, &filter(None, Some("1"), None, None)).unwrap();
         assert_eq!(starred.items.len(), 1);
     }
 
@@ -680,7 +750,12 @@ mod tests {
         upsert(&db.handle, uid, up("al:1")).unwrap();
         // A negative offset would make SQLite read from the end of the table,
         // and an unbounded limit would let one request pull the whole list.
-        let page = list_with_anime(&db.conn(), uid, &filter(None, None, Some(100_000), Some(-5))).unwrap();
+        let page = list_with_anime(
+            &db.conn(),
+            uid,
+            &filter(None, None, Some(100_000), Some(-5)),
+        )
+        .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.per_page, 1_000);
     }

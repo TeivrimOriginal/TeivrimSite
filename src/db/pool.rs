@@ -34,13 +34,17 @@ pub struct PooledConn<'a> {
 impl std::ops::Deref for PooledConn<'_> {
     type Target = Connection;
     fn deref(&self) -> &Connection {
-        self.conn.as_ref().expect("connection already returned to pool")
+        self.conn
+            .as_ref()
+            .expect("connection already returned to pool")
     }
 }
 
 impl std::ops::DerefMut for PooledConn<'_> {
     fn deref_mut(&mut self) -> &mut Connection {
-        self.conn.as_mut().expect("connection already returned to pool")
+        self.conn
+            .as_mut()
+            .expect("connection already returned to pool")
     }
 }
 
@@ -82,7 +86,8 @@ impl Pool {
         let path = path.as_ref().to_string_lossy().to_string();
         let mut conns = Vec::with_capacity(size);
         for i in 0..size {
-            let conn = Connection::open(path.as_str()).map_err(|e| PoolError::Init(e.to_string()))?;
+            let conn =
+                Connection::open(path.as_str()).map_err(|e| PoolError::Init(e.to_string()))?;
             configure(&conn, i == 0).map_err(|e| PoolError::Init(e.to_string()))?;
             conns.push(conn);
         }
@@ -92,12 +97,10 @@ impl Pool {
         })
     }
 
-
     /// Blocks until a connection is free, for at most [`WAIT_TIMEOUT`].
     pub fn get(&self) -> Result<PooledConn<'_>, PoolError> {
         self.take(WAIT_TIMEOUT)
     }
-
 
     /// Waits up to `deadline` for a connection.
     ///
@@ -219,7 +222,9 @@ mod tests {
     /// error on the N+1st call — it blocks, and a test that blocks is a hung
     /// test rather than a failing one.
     fn drain(pool: &Pool, count: usize) -> Vec<PooledConn<'_>> {
-        (0..count).map(|_| pool.get().expect("connection")).collect()
+        (0..count)
+            .map(|_| pool.get().expect("connection"))
+            .collect()
     }
 
     fn pragma_int(conn: &Connection, name: &str) -> i64 {
@@ -243,7 +248,9 @@ mod tests {
         let conn = p.get().expect("connection");
         conn.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (7);")
             .expect("write");
-        let read: i64 = conn.query_row("SELECT a FROM t", [], |r| r.get(0)).expect("read");
+        let read: i64 = conn
+            .query_row("SELECT a FROM t", [], |r| r.get(0))
+            .expect("read");
         assert_eq!(read, 7);
     }
 
@@ -254,10 +261,15 @@ mod tests {
         let (_db, p) = pool(1);
         {
             let conn = p.get().expect("connection");
-            conn.execute_batch("CREATE TABLE t (a INTEGER)").expect("write");
+            conn.execute_batch("CREATE TABLE t (a INTEGER)")
+                .expect("write");
             assert_eq!(p.idle.lock().expect("lock").len(), 0, "связь взята из пула");
         }
-        assert_eq!(p.idle.lock().expect("lock").len(), 1, "связь не вернулась в пул");
+        assert_eq!(
+            p.idle.lock().expect("lock").len(),
+            1,
+            "связь не вернулась в пул"
+        );
         // The very same connection comes back, not a fresh one: the table it
         // created is still there.
         let conn = p.get().expect("connection");
@@ -283,7 +295,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(p.idle.lock().expect("lock").len(), 0);
         drop(first);
-        assert!(waiter.join().expect("waiter"), "второй должен дождаться освобождения");
+        assert!(
+            waiter.join().expect("waiter"),
+            "второй должен дождаться освобождения"
+        );
     }
 
     #[test]
@@ -295,7 +310,11 @@ mod tests {
         let started = Instant::now();
         let err = p.take(Duration::from_millis(50)).err();
         assert!(matches!(err, Some(PoolError::Timeout)), "ошибка: {:?}", err);
-        assert!(started.elapsed() < Duration::from_secs(5), "ждал {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "ждал {:?}",
+            started.elapsed()
+        );
         drop(held);
     }
 
@@ -323,7 +342,10 @@ mod tests {
         let started = Instant::now();
         drop(held);
         assert!(waiter.join().expect("waiter"));
-        assert!(started.elapsed() < Duration::from_secs(4), "проснулся только по таймауту");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "проснулся только по таймауту"
+        );
     }
 
     #[test]
@@ -348,7 +370,9 @@ mod tests {
         // database, and `main` has to see that at boot rather than hours later
         // inside a loader.
         let n = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-        let missing = std::env::temp_dir().join(format!("anime-pool-missing-{}", n)).join("a.db");
+        let missing = std::env::temp_dir()
+            .join(format!("anime-pool-missing-{}", n))
+            .join("a.db");
         let err = Pool::new(&missing, 1).err();
         assert!(matches!(err, Some(PoolError::Init(_))), "ошибка: {:?}", err);
     }
@@ -374,7 +398,9 @@ mod tests {
         let (_db, p) = pool(1);
         assert!(poison(&p), "мьютекс должен быть отравлен");
         let conn = p.get().expect("связь после отравления");
-        let n: i64 = conn.query_row("SELECT 1", [], |r| r.get(0)).expect("запрос");
+        let n: i64 = conn
+            .query_row("SELECT 1", [], |r| r.get(0))
+            .expect("запрос");
         assert_eq!(n, 1);
     }
 
@@ -401,10 +427,24 @@ mod tests {
         let (_db, p) = pool(4);
         let held = drain(&p, 4);
         for (i, conn) in held.iter().enumerate() {
-            assert_eq!(pragma_int(conn, "foreign_keys"), 1, "соединение {} без foreign_keys", i);
-            assert_eq!(pragma_int(conn, "synchronous"), 1, "соединение {} не на NORMAL", i);
+            assert_eq!(
+                pragma_int(conn, "foreign_keys"),
+                1,
+                "соединение {} без foreign_keys",
+                i
+            );
+            assert_eq!(
+                pragma_int(conn, "synchronous"),
+                1,
+                "соединение {} не на NORMAL",
+                i
+            );
             assert_eq!(pragma_int(conn, "busy_timeout"), 30_000, "соединение {}", i);
-            assert!(pragma_int(conn, "cache_size") < 0, "соединение {} без кэша", i);
+            assert!(
+                pragma_int(conn, "cache_size") < 0,
+                "соединение {} без кэша",
+                i
+            );
         }
     }
 
@@ -455,6 +495,8 @@ mod tests {
     }
 
     fn drain_of_handle(handle: &crate::db::Handle, count: usize) -> Vec<PooledConn<'_>> {
-        (0..count).map(|_| handle.conn().expect("связь из пула")).collect()
+        (0..count)
+            .map(|_| handle.conn().expect("связь из пула"))
+            .collect()
     }
 }

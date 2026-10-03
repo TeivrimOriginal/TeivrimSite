@@ -262,7 +262,11 @@ const MEDIA_FIELDS: &str = r#"
 "#;
 
 pub fn build_query(page: u32, per_page: u32, sort: &str) -> String {
-    let sort = if SORTS.contains(&sort) { sort } else { "POPULARITY_DESC" };
+    let sort = if SORTS.contains(&sort) {
+        sort
+    } else {
+        "POPULARITY_DESC"
+    };
     format!(
         r#"query {{
             Page(page: {page}, perPage: {per_page}) {{
@@ -275,7 +279,6 @@ pub fn build_query(page: u32, per_page: u32, sort: &str) -> String {
         sort = sort,
     )
 }
-
 
 #[derive(Debug)]
 pub struct Fetched {
@@ -294,13 +297,14 @@ pub async fn fetch_page(
     parse_page(value)
 }
 
-
 fn parse_page(value: Value) -> Result<Fetched, String> {
     let resp: Response = serde_json::from_value(value).map_err(|e| format!("anilist: {}", e))?;
     if let Some(err) = resp.errors.first() {
         return Err(format!("anilist graphql: {}", err.message));
     }
-    let data = resp.data.ok_or_else(|| "anilist: пустой ответ".to_string())?;
+    let data = resp
+        .data
+        .ok_or_else(|| "anilist: пустой ответ".to_string())?;
     Ok(Fetched {
         has_next: data.page.page_info.has_next_page,
         media: data.page.media,
@@ -447,10 +451,15 @@ mod tests {
         assert_eq!(m.average_score, Some(84));
         assert_eq!(m.mean_score, Some(85));
         assert_eq!(
-            m.cover_image.as_ref().and_then(|c| c.extra_large.as_deref()),
+            m.cover_image
+                .as_ref()
+                .and_then(|c| c.extra_large.as_deref()),
             Some("https://s4.anilist.co/xl.jpg")
         );
-        assert_eq!(m.banner_image.as_deref(), Some("https://s4.anilist.co/banner.jpg"));
+        assert_eq!(
+            m.banner_image.as_deref(),
+            Some("https://s4.anilist.co/banner.jpg")
+        );
         assert_eq!(
             m.start_date.as_ref().and_then(|d| d.to_iso()).as_deref(),
             Some("2013-04-07")
@@ -466,11 +475,7 @@ mod tests {
         assert_eq!(studios[0].name.as_deref(), Some("Wit Studio"));
         assert_eq!(studios[0].is_animation_studio, Some(true));
 
-        let edges = m
-            .relations
-            .as_ref()
-            .and_then(|r| r.edges.as_ref())
-            .unwrap();
+        let edges = m.relations.as_ref().and_then(|r| r.edges.as_ref()).unwrap();
         assert_eq!(edges[0].relation_type.as_deref(), Some("PREQUEL"));
         let node = edges[0].node.as_ref().unwrap();
         assert_eq!(node.id, 11061);
@@ -544,8 +549,16 @@ mod tests {
         });
         let m = &parse_page(v).unwrap().media[0];
         assert!(m.studios.as_ref().and_then(|s| s.nodes.as_ref()).is_none());
-        assert!(m.recommendations.as_ref().and_then(|r| r.nodes.as_ref()).is_none());
-        assert!(m.relations.as_ref().and_then(|r| r.edges.as_ref()).is_none());
+        assert!(m
+            .recommendations
+            .as_ref()
+            .and_then(|r| r.nodes.as_ref())
+            .is_none());
+        assert!(m
+            .relations
+            .as_ref()
+            .and_then(|r| r.edges.as_ref())
+            .is_none());
     }
 
     #[test]
@@ -631,13 +644,25 @@ mod tests {
     fn fuzzy_date_renders_the_longest_known_prefix() {
         // AniList models a partial date as independent nullable fields, so
         // three shapes are possible and all three occur in the catalogue.
-        let full = FuzzyDate { year: Some(2024), month: Some(7), day: Some(14) };
+        let full = FuzzyDate {
+            year: Some(2024),
+            month: Some(7),
+            day: Some(14),
+        };
         assert_eq!(full.to_iso().as_deref(), Some("2024-07-14"));
 
-        let no_day = FuzzyDate { year: Some(2024), month: Some(7), day: None };
+        let no_day = FuzzyDate {
+            year: Some(2024),
+            month: Some(7),
+            day: None,
+        };
         assert_eq!(no_day.to_iso().as_deref(), Some("2024-07"));
 
-        let year_only = FuzzyDate { year: Some(2024), month: None, day: None };
+        let year_only = FuzzyDate {
+            year: Some(2024),
+            month: None,
+            day: None,
+        };
         assert_eq!(year_only.to_iso().as_deref(), Some("2024"));
     }
 
@@ -645,7 +670,11 @@ mod tests {
     fn fuzzy_date_without_a_year_has_no_iso_form() {
         // An unknown year is the one case that cannot be rendered at all, and
         // a fabricated "0000" would break every year range filter.
-        let d = FuzzyDate { year: None, month: Some(7), day: Some(14) };
+        let d = FuzzyDate {
+            year: None,
+            month: Some(7),
+            day: Some(14),
+        };
         assert_eq!(d.to_iso(), None);
     }
 
@@ -653,7 +682,11 @@ mod tests {
     fn fuzzy_date_keeps_the_order_of_a_partial_date() {
         // Year + day but no month is nonsense input; it must degrade to the
         // year rather than inventing a month.
-        let d = FuzzyDate { year: Some(2024), month: None, day: Some(14) };
+        let d = FuzzyDate {
+            year: Some(2024),
+            month: None,
+            day: Some(14),
+        };
         assert_eq!(d.to_iso().as_deref(), Some("2024"));
     }
 
@@ -689,12 +722,21 @@ mod tests {
         // detail page, so the contract is pinned here.
         let q = build_query(1, 50, "ID");
         for field in [
-            "idMal", "countryOfOrigin", "isAdult", "seasonYear", "averageScore",
-            "coverImage", "bannerImage", "streamingEpisodes", "externalLinks",
-            "recommendations", "relations", "studios(isMain: true)", "genres",
+            "idMal",
+            "countryOfOrigin",
+            "isAdult",
+            "seasonYear",
+            "averageScore",
+            "coverImage",
+            "bannerImage",
+            "streamingEpisodes",
+            "externalLinks",
+            "recommendations",
+            "relations",
+            "studios(isMain: true)",
+            "genres",
         ] {
             assert!(q.contains(field), "запрос не запрашивает {}", field);
         }
     }
 }
-

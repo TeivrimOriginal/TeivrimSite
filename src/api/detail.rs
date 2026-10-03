@@ -17,62 +17,66 @@ pub fn load_detail(
     user_id: Option<i64>,
 ) -> ApiResult<AnimeDetail> {
     let row = conn
-        .query_row(&format!("SELECT {} FROM anime a WHERE a.uid = ?1", DETAIL_COLUMNS), [uid], |r| {
-            Ok((
-                r.get::<_, Option<i64>>(0)?, // anilist_id
-                r.get::<_, Option<i64>>(1)?, // kitsu_id
-                r.get::<_, Option<i64>>(2)?, // shikimori_id
-                r.get::<_, Option<i64>>(3)?, // mal_id
-                r.get::<_, Option<String>>(4)?,  // title_romaji
-                r.get::<_, Option<String>>(5)?,  // title_english
-                r.get::<_, Option<String>>(6)?,  // title_native
-                r.get::<_, Option<String>>(7)?,  // title_russian
-                r.get::<_, Option<String>>(8)?,  // alt_titles
-                r.get::<_, Option<String>>(9)?,  // format
-                r.get::<_, Option<String>>(10)?, // status
-                r.get::<_, Option<String>>(11)?, // description
-                r.get::<_, Option<String>>(12)?, // description_ru
-                r.get::<_, Option<i64>>(13)?,    // duration
-                r.get::<_, Option<i64>>(14)?,    // episodes
-                r.get::<_, Option<i64>>(15)?,    // chapters
-                r.get::<_, Option<i64>>(16)?,    // volumes
-                r.get::<_, Option<String>>(17)?, // country
-                r.get::<_, Option<i64>>(18)?,    // is_adult
-                r.get::<_, Option<i64>>(19)?,    // is_licensed
-                r.get::<_, Option<String>>(20)?, // season
-                r.get::<_, Option<i64>>(21)?,    // season_year
-                r.get::<_, Option<String>>(22)?, // start_date
-                r.get::<_, Option<String>>(23)?, // end_date
-                r.get::<_, Option<i64>>(24)?,    // score
-                r.get::<_, Option<String>>(25)?, // score_source
-                r.get::<_, Option<i64>>(26)?,    // mean_score
-                r.get::<_, Option<i64>>(27)?,    // popularity
-                r.get::<_, Option<i64>>(28)?,    // favourites
-                r.get::<_, Option<i64>>(29)?,    // trending
-                r.get::<_, Option<i64>>(30)?,    // rating_count
-                r.get::<_, Option<String>>(31)?, // cover_small
-                r.get::<_, Option<String>>(32)?, // cover_medium
-                r.get::<_, Option<String>>(33)?, // cover_large
-                r.get::<_, Option<String>>(34)?, // cover_color
-                r.get::<_, Option<String>>(35)?, // banner
-                r.get::<_, Option<String>>(36)?, // trailer_id
-                r.get::<_, Option<String>>(37)?, // trailer_site
-                r.get::<_, Option<String>>(38)?, // trailer_thumbnail
-                r.get::<_, Option<String>>(39)?, // genres_json
-                r.get::<_, Option<String>>(40)?, // tags_json
-                r.get::<_, Option<String>>(41)?, // studios_json
-                r.get::<_, Option<String>>(42)?, // producers_json
-                r.get::<_, Option<String>>(43)?, // licensors_json
-                r.get::<_, Option<String>>(44)?, // classifications_json
-                r.get::<_, Option<String>>(45)?, // relations_json
-                r.get::<_, Option<String>>(46)?, // external_links_json
-                r.get::<_, Option<String>>(47)?, // streaming_json
-                r.get::<_, Option<String>>(48)?, // recommendations_json
-                r.get::<_, Option<String>>(49)?, // characters_json
-                r.get::<_, Option<String>>(50)?, // staff_json
-                r.get::<_, Option<i64>>(51)?,    // updated_at
-            ))
-        })
+        .query_row(
+            &format!("SELECT {} FROM anime a WHERE a.uid = ?1", DETAIL_COLUMNS),
+            [uid],
+            |r| {
+                Ok((
+                    r.get::<_, Option<i64>>(0)?,     // anilist_id
+                    r.get::<_, Option<i64>>(1)?,     // kitsu_id
+                    r.get::<_, Option<i64>>(2)?,     // shikimori_id
+                    r.get::<_, Option<i64>>(3)?,     // mal_id
+                    r.get::<_, Option<String>>(4)?,  // title_romaji
+                    r.get::<_, Option<String>>(5)?,  // title_english
+                    r.get::<_, Option<String>>(6)?,  // title_native
+                    r.get::<_, Option<String>>(7)?,  // title_russian
+                    r.get::<_, Option<String>>(8)?,  // alt_titles
+                    r.get::<_, Option<String>>(9)?,  // format
+                    r.get::<_, Option<String>>(10)?, // status
+                    r.get::<_, Option<String>>(11)?, // description
+                    r.get::<_, Option<String>>(12)?, // description_ru
+                    r.get::<_, Option<i64>>(13)?,    // duration
+                    r.get::<_, Option<i64>>(14)?,    // episodes
+                    r.get::<_, Option<i64>>(15)?,    // chapters
+                    r.get::<_, Option<i64>>(16)?,    // volumes
+                    r.get::<_, Option<String>>(17)?, // country
+                    r.get::<_, Option<i64>>(18)?,    // is_adult
+                    r.get::<_, Option<i64>>(19)?,    // is_licensed
+                    r.get::<_, Option<String>>(20)?, // season
+                    r.get::<_, Option<i64>>(21)?,    // season_year
+                    r.get::<_, Option<String>>(22)?, // start_date
+                    r.get::<_, Option<String>>(23)?, // end_date
+                    r.get::<_, Option<i64>>(24)?,    // score
+                    r.get::<_, Option<String>>(25)?, // score_source
+                    r.get::<_, Option<i64>>(26)?,    // mean_score
+                    r.get::<_, Option<i64>>(27)?,    // popularity
+                    r.get::<_, Option<i64>>(28)?,    // favourites
+                    r.get::<_, Option<i64>>(29)?,    // trending
+                    r.get::<_, Option<i64>>(30)?,    // rating_count
+                    r.get::<_, Option<String>>(31)?, // cover_small
+                    r.get::<_, Option<String>>(32)?, // cover_medium
+                    r.get::<_, Option<String>>(33)?, // cover_large
+                    r.get::<_, Option<String>>(34)?, // cover_color
+                    r.get::<_, Option<String>>(35)?, // banner
+                    r.get::<_, Option<String>>(36)?, // trailer_id
+                    r.get::<_, Option<String>>(37)?, // trailer_site
+                    r.get::<_, Option<String>>(38)?, // trailer_thumbnail
+                    r.get::<_, Option<String>>(39)?, // genres_json
+                    r.get::<_, Option<String>>(40)?, // tags_json
+                    r.get::<_, Option<String>>(41)?, // studios_json
+                    r.get::<_, Option<String>>(42)?, // producers_json
+                    r.get::<_, Option<String>>(43)?, // licensors_json
+                    r.get::<_, Option<String>>(44)?, // classifications_json
+                    r.get::<_, Option<String>>(45)?, // relations_json
+                    r.get::<_, Option<String>>(46)?, // external_links_json
+                    r.get::<_, Option<String>>(47)?, // streaming_json
+                    r.get::<_, Option<String>>(48)?, // recommendations_json
+                    r.get::<_, Option<String>>(49)?, // characters_json
+                    r.get::<_, Option<String>>(50)?, // staff_json
+                    r.get::<_, Option<i64>>(51)?,    // updated_at
+                ))
+            },
+        )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound("Аниме не найдено".into()),
             other => ApiError::from(other),
@@ -226,7 +230,11 @@ fn genres_from_dict(conn: &Connection, uid: &str) -> ApiResult<Option<Vec<Genre>
     Ok(if out.is_empty() { None } else { Some(out) })
 }
 
-pub fn load_library_entry(conn: &Connection, user_id: i64, uid: &str) -> ApiResult<Option<LibraryEntry>> {
+pub fn load_library_entry(
+    conn: &Connection,
+    user_id: i64,
+    uid: &str,
+) -> ApiResult<Option<LibraryEntry>> {
     let found = conn
         .query_row(
             "SELECT status, is_favorite, score, progress, episodes, notes, updated_at
@@ -261,13 +269,11 @@ fn parse_tags(json: &Option<String>) -> Vec<Tag> {
         .unwrap_or_default()
         .iter()
         .filter_map(|v| {
-            v.get("name")
-                .and_then(|n| n.as_str())
-                .map(|name| Tag {
-                    name: name.to_string(),
-                    rank: v.get("rank").and_then(|r| r.as_i64()),
-                    spoiler: v.get("isMediaSpoiler").and_then(|s| s.as_bool()),
-                })
+            v.get("name").and_then(|n| n.as_str()).map(|name| Tag {
+                name: name.to_string(),
+                rank: v.get("rank").and_then(|r| r.as_i64()),
+                spoiler: v.get("isMediaSpoiler").and_then(|s| s.as_bool()),
+            })
         })
         .collect()
 }
@@ -284,7 +290,10 @@ fn parse_named(json: &Option<String>) -> Vec<NamedRef> {
                 .or_else(|| v.as_str())?;
             Some(NamedRef {
                 name: name.to_string(),
-                name_ru: v.get("name_ru").and_then(|n| n.as_str()).map(|s| s.to_string()),
+                name_ru: v
+                    .get("name_ru")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string()),
                 is_main: v.get("isAnimationStudio").and_then(|b| b.as_bool()),
             })
         })
@@ -330,8 +339,14 @@ fn parse_relations(json: &Option<String>) -> Vec<Relation> {
                     .to_lowercase(),
                 uid: format!("al:{}", id),
                 title: v.get("title").map(title_from_value).unwrap_or_default(),
-                format: v.get("format").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                status: v.get("status").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                format: v
+                    .get("format")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                status: v
+                    .get("status")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
                 cover: v
                     .get("cover")
                     .or_else(|| v.get("coverImage"))
@@ -361,7 +376,10 @@ fn parse_external_links(json: &Option<String>) -> Vec<ExternalLink> {
                     .unwrap_or("link")
                     .to_string(),
                 url: url.to_string(),
-                kind: v.get("type").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                kind: v
+                    .get("type")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
             })
         })
         .collect()
@@ -378,10 +396,20 @@ fn parse_streaming(json: &Option<String>) -> Vec<StreamingLink> {
                 return None;
             }
             Some(StreamingLink {
-                site: v.get("site").and_then(|x| x.as_str()).unwrap_or("watch").to_string(),
+                site: v
+                    .get("site")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("watch")
+                    .to_string(),
                 url: url.to_string(),
-                title: v.get("title").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                thumbnail: v.get("thumbnail").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                title: v
+                    .get("title")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                thumbnail: v
+                    .get("thumbnail")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
             })
         })
         .collect()
@@ -398,8 +426,14 @@ fn parse_recommendations(json: &Option<String>) -> Vec<Recommendation> {
                 uid: format!("al:{}", id),
                 title: v.get("title").map(title_from_value).unwrap_or_default(),
                 rating: v.get("rating").and_then(|x| x.as_i64()),
-                format: v.get("format").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                cover: v.get("cover").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                format: v
+                    .get("format")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                cover: v
+                    .get("cover")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
             })
         })
         .collect()
@@ -424,12 +458,18 @@ fn parse_people(json: &Option<String>, with_voice: bool) -> Vec<Person> {
         if name.is_empty() {
             continue;
         }
-        let image = v.get("image").and_then(|i| i.as_str()).map(|s| s.to_string());
+        let image = v
+            .get("image")
+            .and_then(|i| i.as_str())
+            .map(|s| s.to_string());
         if with_voice {
             out.push(Person {
                 name: name.to_string(),
                 image,
-                role: v.get("role").and_then(|r| r.as_str()).map(|s| s.to_string()),
+                role: v
+                    .get("role")
+                    .and_then(|r| r.as_str())
+                    .map(|s| s.to_string()),
                 voice_actor: v
                     .get("voice_actor")
                     .and_then(|n| n.as_str())
@@ -457,16 +497,18 @@ fn parse_people(json: &Option<String>, with_voice: bool) -> Vec<Person> {
 pub fn raw_row(conn: &Connection, uid: &str) -> ApiResult<Option<Value>> {
     let mut stmt = conn.prepare("SELECT * FROM anime WHERE uid = ?1")?;
     let mut rows = stmt.query([uid])?;
-    let Some(row) = rows.next()? else { return Ok(None) };
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
     let mut obj = serde_json::Map::new();
     for i in 0..row.as_ref().column_count() {
         let name = row.as_ref().column_name(i).unwrap_or("?").to_string();
         let v: Value = match row.get_ref(i) {
             Ok(rusqlite::types::ValueRef::Null) => Value::Null,
             Ok(rusqlite::types::ValueRef::Integer(n)) => Value::Number(n.into()),
-            Ok(rusqlite::types::ValueRef::Real(f)) => {
-                serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
-            }
+            Ok(rusqlite::types::ValueRef::Real(f)) => serde_json::Number::from_f64(f)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
             Ok(rusqlite::types::ValueRef::Text(t)) => {
                 let s = String::from_utf8_lossy(t).to_string();
                 if name.ends_with("_json") {
@@ -520,9 +562,18 @@ mod tests {
     fn a_trailer_url_is_built_for_the_known_sites() {
         // The stored column is an id; the client needs a link, and each site
         // spells its watch URL differently.
-        assert_eq!(watch_url("youtube", "abc"), "https://www.youtube.com/watch?v=abc");
-        assert_eq!(watch_url("YouTube", "abc"), "https://www.youtube.com/watch?v=abc");
-        assert_eq!(watch_url("dailymotion", "x1"), "https://www.dailymotion.com/video/x1");
+        assert_eq!(
+            watch_url("youtube", "abc"),
+            "https://www.youtube.com/watch?v=abc"
+        );
+        assert_eq!(
+            watch_url("YouTube", "abc"),
+            "https://www.youtube.com/watch?v=abc"
+        );
+        assert_eq!(
+            watch_url("dailymotion", "x1"),
+            "https://www.dailymotion.com/video/x1"
+        );
         assert_eq!(watch_url("twitch", "v1"), "https://www.twitch.tv/videos/v1");
     }
 
@@ -536,7 +587,10 @@ mod tests {
 
     #[test]
     fn parse_string_array_is_total() {
-        assert_eq!(parse_string_array(&some(r#"["a","b"]"#)), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            parse_string_array(&some(r#"["a","b"]"#)),
+            vec!["a".to_string(), "b".to_string()]
+        );
         assert!(parse_string_array(&some("not json")).is_empty());
         assert!(parse_string_array(&None).is_empty());
     }
@@ -565,7 +619,9 @@ mod tests {
     fn parse_named_accepts_objects_and_bare_strings() {
         // Studios arrive as objects from two sources and as plain strings from
         // a third; both shapes are in the wild.
-        let v = parse_named(&some(r#"[{"name":"Wit Studio","name_ru":"Wit","isAnimationStudio":true},"MAPPA"]"#));
+        let v = parse_named(&some(
+            r#"[{"name":"Wit Studio","name_ru":"Wit","isAnimationStudio":true},"MAPPA"]"#,
+        ));
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].name, "Wit Studio");
         assert_eq!(v[0].name_ru.as_deref(), Some("Wit"));
@@ -628,7 +684,10 @@ mod tests {
         assert_eq!(title_from_value(&json!({ "native": "NA" })), "NA");
         assert_eq!(title_from_value(&json!({})), "Без названия");
         // An empty string is skipped, not shown as a blank title.
-        assert_eq!(title_from_value(&json!({ "russian": "", "romaji": "RJ" })), "RJ");
+        assert_eq!(
+            title_from_value(&json!({ "russian": "", "romaji": "RJ" })),
+            "RJ"
+        );
     }
 
     // ------------------------------------------------------------- the rest
@@ -754,7 +813,10 @@ mod tests {
     fn a_character_without_a_voice_actor_still_renders() {
         // Not every character has a Japanese credit, and an empty section is
         // worse than one without a name.
-        let v = parse_people(&some(r#"[{"name":"Eren","image":"e.jpg","role":"Main"}]"#), true);
+        let v = parse_people(
+            &some(r#"[{"name":"Eren","image":"e.jpg","role":"Main"}]"#),
+            true,
+        );
         assert_eq!(v[0].name, "Eren");
         assert_eq!(v[0].voice_actor, None);
     }
@@ -764,7 +826,10 @@ mod tests {
         // The two vocabularies are close enough to be confused. Pinning the
         // difference means a future edit cannot quietly go back.
         let raw = r#"[{"character":{"name":"Eren"},"voiceActors":[{"language":"Japanese","name":"VA"}]}]"#;
-        assert!(parse_people(&some(raw), true).is_empty(), "сырая форма не должна разбираться");
+        assert!(
+            parse_people(&some(raw), true).is_empty(),
+            "сырая форма не должна разбираться"
+        );
     }
 
     #[test]
@@ -779,7 +844,10 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "Sasha");
         assert_eq!(v[0].voice_actor, None);
-        assert_eq!(v[0].positions, Some(vec!["Director".to_string(), "Story".to_string()]));
+        assert_eq!(
+            v[0].positions,
+            Some(vec!["Director".to_string(), "Story".to_string()])
+        );
     }
 
     #[test]
@@ -836,8 +904,17 @@ mod tests {
     #[test]
     fn distinct_values_skips_nulls_and_blanks_and_sorts() {
         let c = conn();
-        for (uid, format) in [("al:1", "TV"), ("al:2", "MOVIE"), ("al:3", ""), ("al:4", "TV")] {
-            let f: Option<&str> = if format.is_empty() { None } else { Some(format) };
+        for (uid, format) in [
+            ("al:1", "TV"),
+            ("al:2", "MOVIE"),
+            ("al:3", ""),
+            ("al:4", "TV"),
+        ] {
+            let f: Option<&str> = if format.is_empty() {
+                None
+            } else {
+                Some(format)
+            };
             c.execute(
                 "INSERT INTO anime (uid, format, created_at) VALUES (?1, ?2, 1)",
                 params![uid, f],
@@ -851,11 +928,18 @@ mod tests {
     #[test]
     fn year_bounds_ignore_yearless_titles() {
         let c = conn();
-        c.execute("INSERT INTO anime (uid, start_year, created_at) VALUES ('al:1', 2013, 1)", [])
+        c.execute(
+            "INSERT INTO anime (uid, start_year, created_at) VALUES ('al:1', 2013, 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO anime (uid, start_year, created_at) VALUES ('al:2', 2003, 1)",
+            [],
+        )
+        .unwrap();
+        c.execute("INSERT INTO anime (uid, created_at) VALUES ('al:3', 1)", [])
             .unwrap();
-        c.execute("INSERT INTO anime (uid, start_year, created_at) VALUES ('al:2', 2003, 1)", [])
-            .unwrap();
-        c.execute("INSERT INTO anime (uid, created_at) VALUES ('al:3', 1)", []).unwrap();
         assert_eq!(year_bounds(&c).unwrap(), (Some(2003), Some(2013)));
     }
 
@@ -927,7 +1011,10 @@ mod tests {
         assert_eq!(d.cover_color.as_deref(), Some("#8f9494"));
         assert_eq!(d.updated_at, Some(42));
 
-        assert_eq!(d.trailer.as_ref().unwrap().url, "https://www.youtube.com/watch?v=abc");
+        assert_eq!(
+            d.trailer.as_ref().unwrap().url,
+            "https://www.youtube.com/watch?v=abc"
+        );
         assert_eq!(d.genres[0].name, "Action");
         assert_eq!(d.tags[0].name, "Military");
         assert_eq!(d.studios[0].name, "Wit Studio");
@@ -1014,7 +1101,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let uid: i64 = c.query_row("SELECT id FROM users", [], |r| r.get(0)).unwrap();
+        let uid: i64 = c
+            .query_row("SELECT id FROM users", [], |r| r.get(0))
+            .unwrap();
 
         let anonymous = load_detail(&c, "al:16498", false, None).unwrap();
         assert!(anonymous.library.is_none());

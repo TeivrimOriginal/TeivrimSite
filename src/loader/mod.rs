@@ -302,7 +302,11 @@ async fn summarize(ctx: &Ctx) {
     };
     log_info(&format!(
         "[итог] всего {} | AniList {} | Kitsu {} | с русским названием {} | жанров {}",
-        stats["anime"], stats["with_anilist"], stats["with_kitsu"], stats["with_russian"], stats["genres"]
+        stats["anime"],
+        stats["with_anilist"],
+        stats["with_kitsu"],
+        stats["with_russian"],
+        stats["genres"]
     ));
 }
 
@@ -460,7 +464,10 @@ fn decode_numeric(body: &str) -> Option<String> {
     // &#NN; and &#xNN;. `from_u32` rejects the surrogate range, so a crafted
     // `&#xD800;` cannot smuggle an invalid code point through.
     let digits = body.strip_prefix('#')?;
-    let code = match digits.strip_prefix('x').or_else(|| digits.strip_prefix('X')) {
+    let code = match digits
+        .strip_prefix('x')
+        .or_else(|| digits.strip_prefix('X'))
+    {
         Some(hex) => u32::from_str_radix(hex, 16).ok()?,
         None => digits.parse::<u32>().ok()?,
     };
@@ -570,7 +577,10 @@ mod tests {
         assert_eq!(strip_html("&amp;lt;"), "&lt;");
         assert_eq!(strip_html("&amp;amp;"), "&amp;");
         // The same has to hold when the literal is inside a paragraph.
-        assert_eq!(strip_html("<p>&amp;lt;script&amp;gt;</p>"), "&lt;script&gt;");
+        assert_eq!(
+            strip_html("<p>&amp;lt;script&amp;gt;</p>"),
+            "&lt;script&gt;"
+        );
     }
 
     #[test]
@@ -705,7 +715,10 @@ mod tests {
         );
         drop(first);
         assert!(!is_running(), "флаг не освобождён");
-        assert!(try_begin_run().is_some(), "после освобождения флаг снова доступен");
+        assert!(
+            try_begin_run().is_some(),
+            "после освобождения флаг снова доступен"
+        );
     }
 
     #[tokio::test]
@@ -730,8 +743,14 @@ mod tests {
         // request rate against APIs that answer 429 to it.
         let _serial = RUN_FLAG_LOCK.lock().await;
         let _held = try_begin_run().expect("флаг");
-        assert!(!run_all(idle_ctx()).await, "второй проход должен быть пропущен");
-        assert!(is_running(), "пропущенный проход не должен снимать чужой флаг");
+        assert!(
+            !run_all(idle_ctx()).await,
+            "второй проход должен быть пропущен"
+        );
+        assert!(
+            is_running(),
+            "пропущенный проход не должен снимать чужой флаг"
+        );
     }
 
     #[tokio::test]
@@ -746,11 +765,7 @@ mod tests {
         // `timeout` is how the first poll is taken: `clear_abort` is the first
         // statement of the pass, so it has run by the time the future is
         // dropped, and the pass never gets far enough to touch a source.
-        let _ = tokio::time::timeout(
-            Duration::from_millis(1),
-            run_claimed(idle_ctx()),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_millis(1), run_claimed(idle_ctx())).await;
         assert!(!aborted(), "проход не снял флаг прерывания");
     }
 }

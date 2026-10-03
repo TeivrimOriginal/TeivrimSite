@@ -84,7 +84,10 @@ async fn refresh(ctx: &Ctx) {
         // Without the rewind every sort is skipped as "already synchronised"
         // and the pass is a no-op that still costs a few thousand requests, so
         // it is better to skip it entirely than to run it empty.
-        log_error(&format!("[sync] сброс чекпойнтов не удался, проход пропущен: {}", e));
+        log_error(&format!(
+            "[sync] сброс чекпойнтов не удался, проход пропущен: {}",
+            e
+        ));
         return;
     }
     log_info("=== плановое обновление каталога ===");
@@ -220,7 +223,11 @@ mod tests {
         }
         assert_eq!(rewind_all(&c), 4);
         let left: i64 = c
-            .query_row("SELECT COUNT(*) FROM sync_state WHERE finished = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sync_state WHERE finished = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(left, 0);
     }

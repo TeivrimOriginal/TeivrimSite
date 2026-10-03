@@ -125,7 +125,11 @@ pub async fn proxy(
         }
     };
     if bytes.len() > MAX_BYTES {
-        log_warn(&format!("[img] {} слишком большой ({} Б)", target, bytes.len()));
+        log_warn(&format!(
+            "[img] {} слишком большой ({} Б)",
+            target,
+            bytes.len()
+        ));
         return placeholder();
     }
 
@@ -216,10 +220,8 @@ impl ImageCache {
             // Cheap eviction: drop the oldest quarter. A precise LRU is not
             // worth the bookkeeping for a cache this size.
             let drop_count = CACHE_MAX_ENTRIES / 4;
-            let mut victims: Vec<(String, Instant)> = map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.stored))
-                .collect();
+            let mut victims: Vec<(String, Instant)> =
+                map.iter().map(|(k, v)| (k.clone(), v.stored)).collect();
             victims.sort_by_key(|(_, t)| *t);
             for (k, _) in victims.into_iter().take(drop_count) {
                 map.remove(&k);
@@ -248,13 +250,22 @@ mod tests {
         match parse_and_authorize(raw) {
             Ok(v) => panic!("{} не должен был пройти (получено {})", raw, v),
             // The message must not enumerate the allow-list.
-            Err(e) => assert!(!e.to_string().contains("anilist.co"), "утечка списка хостов"),
+            Err(e) => assert!(
+                !e.to_string().contains("anilist.co"),
+                "утечка списка хостов"
+            ),
         }
     }
 
     #[test]
     fn the_known_cdns_are_allowed() {
-        for host in ["s4.anilist.co", "s1.anilist.co", "img.anili.st", "media.kitsu.app", "shikimori.one"] {
+        for host in [
+            "s4.anilist.co",
+            "s1.anilist.co",
+            "img.anili.st",
+            "media.kitsu.app",
+            "shikimori.one",
+        ] {
             let url = format!("https://{}/cover.jpg", host);
             assert_eq!(allowed(&url), url);
         }
@@ -352,7 +363,10 @@ mod tests {
         }
         assert!(c.get("k").is_none());
         let map = c.0.lock().unwrap();
-        assert!(!map.contains_key("k"), "протухшая запись должна быть удалена");
+        assert!(
+            !map.contains_key("k"),
+            "протухшая запись должна быть удалена"
+        );
     }
 
     #[test]

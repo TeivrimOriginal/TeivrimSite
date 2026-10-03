@@ -39,7 +39,6 @@ impl Limiter {
         }
     }
 
-
     /// Consumes one token. Returns whether the request may proceed.
     pub fn check_n(&self, key: &str, limit: u32) -> Decision {
         let now = Instant::now();
@@ -56,7 +55,9 @@ impl Limiter {
             window_start: now,
         });
 
-        if now.duration_since(entry.window_start) >= std::time::Duration::from_secs(self.window_secs) {
+        if now.duration_since(entry.window_start)
+            >= std::time::Duration::from_secs(self.window_secs)
+        {
             entry.count = 0;
             entry.window_start = now;
         }
@@ -76,7 +77,6 @@ impl Limiter {
             retry_after: 0,
         }
     }
-
 }
 
 #[cfg(test)]

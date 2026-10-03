@@ -53,7 +53,10 @@ impl Cors {
             return;
         }
         if self.allow_any {
-            h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
         } else if let Some(o) = origin {
             if let Ok(v) = HeaderValue::from_str(o) {
                 h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
@@ -66,7 +69,9 @@ impl Cors {
         );
         h.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("authorization, content-type, x-admin-token, x-requested-with"),
+            HeaderValue::from_static(
+                "authorization, content-type, x-admin-token, x-requested-with",
+            ),
         );
         h.insert(
             header::ACCESS_CONTROL_MAX_AGE,
@@ -220,11 +225,19 @@ mod tests {
         // `authorization` has to be allowed or every authenticated call fails
         // the preflight in a browser.
         let h = headers_for(&["*"], Some("https://anywhere.example"));
-        let methods = h.get(header::ACCESS_CONTROL_ALLOW_METHODS).unwrap().to_str().unwrap();
+        let methods = h
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .unwrap()
+            .to_str()
+            .unwrap();
         for m in ["GET", "POST", "PATCH", "DELETE", "OPTIONS"] {
             assert!(methods.contains(m), "метод {} не разрешён", m);
         }
-        let hdrs = h.get(header::ACCESS_CONTROL_ALLOW_HEADERS).unwrap().to_str().unwrap();
+        let hdrs = h
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .unwrap()
+            .to_str()
+            .unwrap();
         for x in ["authorization", "content-type", "x-admin-token"] {
             assert!(hdrs.contains(x), "заголовок {} не разрешён", x);
         }
@@ -236,7 +249,10 @@ mod tests {
     fn an_origin_with_a_header_injection_attempt_is_not_echoed() {
         // HeaderValue::from_str rejects control characters, and the code drops
         // the header rather than trying to sanitise it into something wrong.
-        let h = headers_for(&["https://good.example"], Some("https://good.example\r\nX-Evil: 1"));
+        let h = headers_for(
+            &["https://good.example"],
+            Some("https://good.example\r\nX-Evil: 1"),
+        );
         assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
     }
 }

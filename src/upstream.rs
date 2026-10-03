@@ -216,15 +216,16 @@ impl Upstream {
     }
 
     /// GET whose answer the caller is willing to reuse.
-    pub async fn get_json_cached(
-        &self,
-        url: &str,
-        freshness: Freshness,
-    ) -> Result<Value, String> {
+    pub async fn get_json_cached(&self, url: &str, freshness: Freshness) -> Result<Value, String> {
         if freshness == Freshness::Now {
             return self.get_json(url).await;
         }
-        if let Some(hit) = self.cache.lock().unwrap_or_else(|p| p.into_inner()).get(url) {
+        if let Some(hit) = self
+            .cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(url)
+        {
             return Ok(hit);
         }
         // The store happens inside `fetch` and only on a 2xx, so a failed
@@ -243,8 +244,13 @@ impl Upstream {
         // Never cached. The body is the query, so two POSTs to the same URL are
         // two different questions and a cache keyed by URL cannot tell them
         // apart.
-        self.fetch(|rb| async move { rb.json(body).send().await }, url, "POST", false)
-            .await
+        self.fetch(
+            |rb| async move { rb.json(body).send().await },
+            url,
+            "POST",
+            false,
+        )
+        .await
     }
 
     async fn fetch<F, Fut>(
@@ -274,7 +280,10 @@ impl Upstream {
                 Ok(r) => r,
                 Err(e) => {
                     last = format!("transport: {}", e);
-                    log_warn(&format!("[{}] {} {} попытка {}: {}", self.name, method, url, attempt, e));
+                    log_warn(&format!(
+                        "[{}] {} {} попытка {}: {}",
+                        self.name, method, url, attempt, e
+                    ));
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                     continue;
@@ -284,8 +293,9 @@ impl Upstream {
             let status = resp.status();
             if status.is_success() {
                 let text = resp.text().await.map_err(|e| format!("body: {}", e))?;
-                let value: Value = serde_json::from_str(&text)
-                    .map_err(|e| format!("json: {} (начало ответа: {})", e, truncate(&text, 200)))?;
+                let value: Value = serde_json::from_str(&text).map_err(|e| {
+                    format!("json: {} (начало ответа: {})", e, truncate(&text, 200))
+                })?;
                 if store {
                     // Only a success is ever stored, so a source that was down
                     // for a minute is retried on the next pass instead of being
@@ -342,7 +352,11 @@ impl Upstream {
             }
 
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("HTTP {}: {}", status.as_u16(), truncate(&body, 300)));
+            return Err(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                truncate(&body, 300)
+            ));
         }
 
         Err(format!("после {} попыток: {}", self.attempts, last))
@@ -455,7 +469,10 @@ mod tests {
         let u = upstream(120);
         let t0 = Instant::now();
         u.wait_turn();
-        assert!(t0.elapsed() < Duration::from_millis(50), "первый запрос ждать не должен");
+        assert!(
+            t0.elapsed() < Duration::from_millis(50),
+            "первый запрос ждать не должен"
+        );
         let second = Instant::now();
         u.wait_turn();
         assert!(
@@ -527,7 +544,9 @@ mod tests {
         std::thread::spawn(move || {
             let mut served = 0usize;
             for response in responses {
-                let Ok((mut sock, _)) = listener.accept() else { break };
+                let Ok((mut sock, _)) = listener.accept() else {
+                    break;
+                };
                 // The request has to be read before the response is written, or
                 // the client sees a reset instead of the status under test.
                 let mut buf = [0u8; 4096];
@@ -572,7 +591,11 @@ mod tests {
         let (url, _rx) = spawn_server(vec![NOT_JSON]);
         let e = client().get_json(&url).await.unwrap_err();
         assert!(e.contains("json:"), "ошибка: {}", e);
-        assert!(e.contains("rate limited"), "в ответе нет начала тела: {}", e);
+        assert!(
+            e.contains("rate limited"),
+            "в ответе нет начала тела: {}",
+            e
+        );
     }
 
     #[tokio::test]
@@ -649,7 +672,10 @@ mod tests {
     ///
     /// `Connection: close` because the loop accepts one socket per request: a
     /// pooled connection would be handed a second request that nobody reads.
-    fn spawn_counting_server(body: String, times: usize) -> (String, std::sync::mpsc::Receiver<usize>) {
+    fn spawn_counting_server(
+        body: String,
+        times: usize,
+    ) -> (String, std::sync::mpsc::Receiver<usize>) {
         use std::io::{Read, Write};
 
         let length = body.len();
@@ -663,7 +689,9 @@ mod tests {
         std::thread::spawn(move || {
             let mut served = 0usize;
             while served < times {
-                let Ok((mut sock, _)) = listener.accept() else { break };
+                let Ok((mut sock, _)) = listener.accept() else {
+                    break;
+                };
                 let mut buf = [0u8; 4096];
                 let _ = sock.read(&mut buf);
                 let _ = sock.write_all(response.as_bytes());
@@ -738,7 +766,11 @@ mod tests {
         for _ in 0..3 {
             u.get_json(&url).await.unwrap();
         }
-        assert_eq!(served_up_to(&rx, 3), 3, "повторные запросы не дошли до сервера");
+        assert_eq!(
+            served_up_to(&rx, 3),
+            3,
+            "повторные запросы не дошли до сервера"
+        );
         assert_eq!(u.cache_stats().entries, 0, "страница попала в кэш");
     }
 
@@ -762,8 +794,18 @@ mod tests {
         let (first_url, first_rx) = spawn_counting_server("{\"a\":1}".to_string(), 8);
         let (second_url, second_rx) = spawn_counting_server("{\"a\":2}".to_string(), 8);
         let u = client();
-        assert_eq!(u.get_json_cached(&first_url, Freshness::Forever).await.unwrap()["a"], 1);
-        assert_eq!(u.get_json_cached(&second_url, Freshness::Forever).await.unwrap()["a"], 2);
+        assert_eq!(
+            u.get_json_cached(&first_url, Freshness::Forever)
+                .await
+                .unwrap()["a"],
+            1
+        );
+        assert_eq!(
+            u.get_json_cached(&second_url, Freshness::Forever)
+                .await
+                .unwrap()["a"],
+            2
+        );
         assert_eq!(first_rx.recv().unwrap(), 1);
         assert_eq!(second_rx.recv().unwrap(), 1);
         assert_eq!(u.cache_stats().entries, 2);
@@ -782,7 +824,10 @@ mod tests {
         // A permanent failure leaves nothing behind: the next call has to go
         // out and try again.
         let (dead_url, _rx) = spawn_server(vec![NOT_FOUND]);
-        assert!(u.get_json_cached(&dead_url, Freshness::Forever).await.is_err());
+        assert!(u
+            .get_json_cached(&dead_url, Freshness::Forever)
+            .await
+            .is_err());
         assert_eq!(u.cache_stats().entries, 1, "ошибка попала в кэш");
     }
 
@@ -801,10 +846,20 @@ mod tests {
 
         let second = u.get_json_cached(&url, Freshness::Forever).await.unwrap();
         assert_eq!(second["a"], first["a"]);
-        assert_eq!(served_up_to(&rx, 2), 2, "слишком большой ответ всё-таки сохранили");
+        assert_eq!(
+            served_up_to(&rx, 2),
+            2,
+            "слишком большой ответ всё-таки сохранили"
+        );
         assert_eq!(
             u.cache_stats(),
-            CacheStats { entries: 0, bytes: 0, hits: 0, misses: 2, refused: 2 }
+            CacheStats {
+                entries: 0,
+                bytes: 0,
+                hits: 0,
+                misses: 2,
+                refused: 2
+            }
         );
     }
 
@@ -814,8 +869,12 @@ mod tests {
         // page size, sort and page all live in the body.
         let (url, rx) = spawn_counting_server("{\"a\":1}".to_string(), 4);
         let u = client();
-        u.post_json(&url, &serde_json::json!({ "query": "one" })).await.unwrap();
-        u.post_json(&url, &serde_json::json!({ "query": "two" })).await.unwrap();
+        u.post_json(&url, &serde_json::json!({ "query": "one" }))
+            .await
+            .unwrap();
+        u.post_json(&url, &serde_json::json!({ "query": "two" }))
+            .await
+            .unwrap();
         assert_eq!(served_up_to(&rx, 2), 2);
         assert_eq!(u.cache_stats().entries, 0);
     }
@@ -845,7 +904,13 @@ mod tests {
             panic!("deliberate panic while holding the cache");
         }));
         assert!(held.is_err());
-        assert!(u.cache.lock().unwrap_or_else(|p| p.into_inner()).stats().entries == 0);
+        assert!(
+            u.cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .stats()
+                .entries
+                == 0
+        );
     }
 }
-

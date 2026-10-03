@@ -64,7 +64,10 @@ mod tests {
         .await;
         let res = test::call_service(&app, TestRequest::get().uri("/api/stats").to_request()).await;
         let status = res.status();
-        assert_eq!(res.headers().get("cache-control").unwrap(), "public, max-age=60");
+        assert_eq!(
+            res.headers().get("cache-control").unwrap(),
+            "public, max-age=60"
+        );
         let bytes = to_bytes(res.into_body()).await.expect("body");
         (status, serde_json::from_slice(&bytes).expect("json"))
     }
@@ -75,31 +78,44 @@ mod tests {
         let c = db.conn();
         for (uid, title_ru, kitsu, shiki, anilist, score, trailer, year) in [
             // full row
-            ("al:1", Some("Атака Титанов"), Some(1), Some(1), Some(1), Some(84), Some("abc"), Some(2013)),
+            (
+                "al:1",
+                Some("Атака Титанов"),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(84),
+                Some("abc"),
+                Some(2013),
+            ),
             // every optional column empty
             ("al:2", None, None, None, None, None, None, None),
             // the ones that must NOT be counted: an empty russian title is not
             // a russian title, and an empty trailer id is not a trailer
-            ("al:3", Some(""), Some(2), None, None, None, Some(""), Some(2020)),
+            (
+                "al:3",
+                Some(""),
+                Some(2),
+                None,
+                None,
+                None,
+                Some(""),
+                Some(2020),
+            ),
         ] {
             c.execute(
                 "INSERT INTO anime (uid, anilist_id, title_russian, kitsu_id, shikimori_id,
                     score, trailer_id, start_year, is_adult, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, 1)",
-                rusqlite::params![
-                    uid,
-                    anilist,
-                    title_ru,
-                    kitsu,
-                    shiki,
-                    score,
-                    trailer,
-                    year
-                ],
+                rusqlite::params![uid, anilist, title_ru, kitsu, shiki, score, trailer, year],
             )
             .expect("insert");
         }
-        for (slug, category) in [("action", "genre"), ("hentai", "genre"), ("studio-ghibli", "studio")] {
+        for (slug, category) in [
+            ("action", "genre"),
+            ("hentai", "genre"),
+            ("studio-ghibli", "studio"),
+        ] {
             c.execute(
                 "INSERT INTO genres (slug, name_en, category, created_at) VALUES (?1, ?2, ?3, 1)",
                 rusqlite::params![slug, slug, category],
@@ -116,8 +132,17 @@ mod tests {
         let (status, v) = call(&db).await;
         assert_eq!(status, StatusCode::OK);
         for key in [
-            "anime", "with_russian", "with_anilist", "with_kitsu", "with_shikimori",
-            "with_score", "with_trailer", "genres", "tags", "studios", "users",
+            "anime",
+            "with_russian",
+            "with_anilist",
+            "with_kitsu",
+            "with_shikimori",
+            "with_score",
+            "with_trailer",
+            "genres",
+            "tags",
+            "studios",
+            "users",
         ] {
             assert_eq!(v[key], 0, "{} должен быть нулём, ответ: {}", key, v);
         }

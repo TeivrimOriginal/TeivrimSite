@@ -127,7 +127,8 @@ pub async fn start(
     ctx: Option<web::Data<Arc<crate::loader::Ctx>>>,
 ) -> HttpResponse {
     if !authorized(&req, admin_token.as_deref()) {
-        return ApiError::Forbidden("Для запуска синхронизации нужен X-Admin-Token".into()).error_response();
+        return ApiError::Forbidden("Для запуска синхронизации нужен X-Admin-Token".into())
+            .error_response();
     }
     let Some(ctx) = ctx else {
         return ApiError::internal("загрузчики отключены в этой сборке").error_response();
@@ -137,7 +138,8 @@ pub async fn start(
     // The same flag the refresh timer takes, which is what stops a manual start
     // from racing the timer into two passes over the same checkpoints.
     let Some(guard) = crate::loader::try_begin_run() else {
-        return HttpResponse::Ok().json(serde_json::json!({ "started": false, "reason": "уже выполняется" }));
+        return HttpResponse::Ok()
+            .json(serde_json::json!({ "started": false, "reason": "уже выполняется" }));
     };
     let ctx = (**ctx).clone();
     tokio::spawn(async move {
@@ -149,7 +151,8 @@ pub async fn start(
 
 pub async fn abort(req: HttpRequest, admin_token: web::Data<Option<String>>) -> HttpResponse {
     if !authorized(&req, admin_token.as_deref()) {
-        return ApiError::Forbidden("Для остановки синхронизации нужен X-Admin-Token".into()).error_response();
+        return ApiError::Forbidden("Для остановки синхронизации нужен X-Admin-Token".into())
+            .error_response();
     }
     crate::loader::request_abort();
     HttpResponse::Ok().json(serde_json::json!({ "aborting": true }))
@@ -256,7 +259,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(done.is_none(), "завершённая задача не должна выглядеть сломанной");
+        assert!(
+            done.is_none(),
+            "завершённая задача не должна выглядеть сломанной"
+        );
     }
 
     #[test]

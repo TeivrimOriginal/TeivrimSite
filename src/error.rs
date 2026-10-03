@@ -164,11 +164,26 @@ mod tests {
     fn every_variant_maps_to_its_own_status() {
         // These codes are the API contract: a client branches on them.
         assert_eq!(ApiError::bad("x").status_code(), StatusCode::BAD_REQUEST);
-        assert_eq!(ApiError::Unauthorized("x".into()).status_code(), StatusCode::UNAUTHORIZED);
-        assert_eq!(ApiError::Forbidden("x".into()).status_code(), StatusCode::FORBIDDEN);
-        assert_eq!(ApiError::NotFound("x".into()).status_code(), StatusCode::NOT_FOUND);
-        assert_eq!(ApiError::Conflict("x".into()).status_code(), StatusCode::CONFLICT);
-        assert_eq!(ApiError::internal("x").status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            ApiError::Unauthorized("x".into()).status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ApiError::Forbidden("x".into()).status_code(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            ApiError::NotFound("x".into()).status_code(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ApiError::Conflict("x".into()).status_code(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ApiError::internal("x").status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
@@ -190,7 +205,10 @@ mod tests {
     fn the_error_body_has_the_documented_shape() {
         // `{"error":{"code":...,"message":...}}` is what every client parses.
         let res = ApiError::NotFound("Аниме не найдено".into()).error_response();
-        assert_eq!(res.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "application/json"
+        );
     }
 
     #[test]

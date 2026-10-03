@@ -18,7 +18,10 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
         Ok(Some(ru)) => log_info(&format!("[shikimori] доступен, пример: «{}»", ru)),
         Ok(None) => log_warn("[shikimori] доступен, но поле russian пустое"),
         Err(e) => {
-            log_error(&format!("[shikimori] недоступен ({}), русские названия не будут обновлены", e));
+            log_error(&format!(
+                "[shikimori] недоступен ({}), русские названия не будут обновлены",
+                e
+            ));
             return Ok(());
         }
     }
@@ -31,7 +34,10 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
         let task = format!("order:{}", order);
         let cp = with_conn(&ctx, |c| Ok(db::get_checkpoint(c, SOURCE, &task)))?;
         if cp.finished {
-            log_info(&format!("[shikimori][{}] уже синхронизирован, пропускаю", order));
+            log_info(&format!(
+                "[shikimori][{}] уже синхронизирован, пропускаю",
+                order
+            ));
             continue;
         }
 
@@ -42,31 +48,37 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
         let mut last_reported = Instant::now();
 
         while page <= MAX_PAGES {
-            let fetched = match shikimori::fetch_page(&ctx.sources.shikimori, page, per_page, order).await {
-                Ok(f) => f,
-                Err(e) => {
-                    log_error(&format!("[shikimori][{}] стр. {}: {}", order, page, e));
-                    let _ = with_conn(&ctx, |c| { db::mark_error(c, SOURCE, &task, &e); Ok(()) });
-                    match failures.record() {
-                        super::OnError::NextPage => {
-                            page += 1;
-                            continue;
-                        }
-                        super::OnError::NextSort => {
-                            log_error(&format!(
-                                "[shikimori][{}] {} ошибок подряд, следующий порядок",
-                                order,
-                                failures.streak()
-                            ));
-                            break;
+            let fetched =
+                match shikimori::fetch_page(&ctx.sources.shikimori, page, per_page, order).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        log_error(&format!("[shikimori][{}] стр. {}: {}", order, page, e));
+                        let _ = with_conn(&ctx, |c| {
+                            db::mark_error(c, SOURCE, &task, &e);
+                            Ok(())
+                        });
+                        match failures.record() {
+                            super::OnError::NextPage => {
+                                page += 1;
+                                continue;
+                            }
+                            super::OnError::NextSort => {
+                                log_error(&format!(
+                                    "[shikimori][{}] {} ошибок подряд, следующий порядок",
+                                    order,
+                                    failures.streak()
+                                ));
+                                break;
+                            }
                         }
                     }
-                }
-            };
+                };
             failures.reset();
 
             if fetched.items.is_empty() {
-                with_conn(&ctx, |c| db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, true))?;
+                with_conn(&ctx, |c| {
+                    db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, true)
+                })?;
                 break;
             }
 
@@ -90,7 +102,14 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
             merged += hit;
 
             with_conn(&ctx, |c| {
-                db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, !fetched.has_next)
+                db::save_checkpoint(
+                    c,
+                    SOURCE,
+                    &task,
+                    page as i64,
+                    cp.total_saved + saved,
+                    !fetched.has_next,
+                )
             })?;
 
             // Shikimori carries Russian genre names, so new `sh:` rows need to
@@ -143,7 +162,10 @@ enum Merge {
     Created,
 }
 
-fn with_conn<T>(ctx: &Ctx, f: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>) -> Result<T, String> {
+fn with_conn<T>(
+    ctx: &Ctx,
+    f: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+) -> Result<T, String> {
     let c = ctx.db.conn().map_err(|e| e.to_string())?;
     f(&c).map_err(|e| {
         log_error(&format!("db: {}", e));
@@ -224,7 +246,11 @@ fn upsert(conn: &Connection, item: &Anime) -> Result<Merge, rusqlite::Error> {
         .optional()?
     }
     .or_else(|| {
-        let en = item.english.as_ref().and_then(|v| v.first()).map(|s| super::title_key(s));
+        let en = item
+            .english
+            .as_ref()
+            .and_then(|v| v.first())
+            .map(|s| super::title_key(s));
         match en {
             Some(enk) if !enk.is_empty() => conn
                 .query_row(
@@ -394,20 +420,34 @@ mod tests {
                 name: Some("Wit Studio".into()),
                 russian: Some("Wit Studio".into()),
             }]),
-            genres: Some(vec![Named { name: Some("Action".into()), russian: Some("Боевик".into()) }]),
-            tags: Some(vec![Tag { name: Some("Military".into()), russian: Some("Военный".into()) }]),
+            genres: Some(vec![Named {
+                name: Some("Action".into()),
+                russian: Some("Боевик".into()),
+            }]),
+            tags: Some(vec![Tag {
+                name: Some("Military".into()),
+                russian: Some("Военный".into()),
+            }]),
             rates: None,
         }
     }
 
     fn get_str(c: &Connection, uid: &str, col: &str) -> Option<String> {
-        c.query_row(&format!("SELECT {} FROM anime WHERE uid = ?1", col), [uid], |r| r.get(0))
-            .unwrap()
+        c.query_row(
+            &format!("SELECT {} FROM anime WHERE uid = ?1", col),
+            [uid],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 
     fn get_i64(c: &Connection, uid: &str, col: &str) -> Option<i64> {
-        c.query_row(&format!("SELECT {} FROM anime WHERE uid = ?1", col), [uid], |r| r.get(0))
-            .unwrap()
+        c.query_row(
+            &format!("SELECT {} FROM anime WHERE uid = ?1", col),
+            [uid],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 
     // ---------------------------------------------------------- normalising
@@ -479,7 +519,10 @@ mod tests {
         insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
         let outcome = upsert(&c, &item(16498));
         assert!(matches!(outcome, Ok(Merge::Merged)));
-        assert_eq!(get_str(&c, "al:16498", "title_russian").as_deref(), Some("Атака Титанов"));
+        assert_eq!(
+            get_str(&c, "al:16498", "title_russian").as_deref(),
+            Some("Атака Титанов")
+        );
         assert_eq!(get_i64(&c, "al:16498", "shikimori_id"), Some(16498));
     }
 
@@ -490,7 +533,10 @@ mod tests {
         let c = conn();
         insert_anime(&c, "al:16498", Some("SHINGEKI NO KYOJIN"));
         assert!(matches!(upsert(&c, &item(16498)), Ok(Merge::Merged)));
-        assert_eq!(get_str(&c, "al:16498", "title_russian").as_deref(), Some("Атака Титанов"));
+        assert_eq!(
+            get_str(&c, "al:16498", "title_russian").as_deref(),
+            Some("Атака Титанов")
+        );
     }
 
     #[test]
@@ -503,17 +549,29 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(upsert(&c, &item(16498)), Ok(Merge::Merged)));
-        assert_eq!(get_str(&c, "al:1", "title_russian").as_deref(), Some("Атака Титанов"));
+        assert_eq!(
+            get_str(&c, "al:1", "title_russian").as_deref(),
+            Some("Атака Титанов")
+        );
     }
 
     #[test]
     fn an_unknown_title_creates_a_row_under_a_shikimori_uid() {
         let c = conn();
         assert!(matches!(upsert(&c, &item(999)), Ok(Merge::Created)));
-        assert_eq!(get_str(&c, "sh:999", "title_russian").as_deref(), Some("Атака Титанов"));
+        assert_eq!(
+            get_str(&c, "sh:999", "title_russian").as_deref(),
+            Some("Атака Титанов")
+        );
         assert_eq!(get_i64(&c, "sh:999", "shikimori_id"), Some(999));
-        assert_eq!(get_str(&c, "sh:999", "title_romaji").as_deref(), Some("Shingeki no Kyojin"));
-        assert_eq!(get_str(&c, "sh:999", "title_key").as_deref(), Some("shingeki no kyojin"));
+        assert_eq!(
+            get_str(&c, "sh:999", "title_romaji").as_deref(),
+            Some("Shingeki no Kyojin")
+        );
+        assert_eq!(
+            get_str(&c, "sh:999", "title_key").as_deref(),
+            Some("shingeki no kyojin")
+        );
     }
 
     #[test]
@@ -524,7 +582,9 @@ mod tests {
         let mut it = item(999);
         it.russian = Some("   ".into());
         assert!(matches!(upsert(&c, &it), Ok(Merge::Merged)));
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -534,7 +594,10 @@ mod tests {
         let c = conn();
         upsert(&c, &item(999)).unwrap();
         assert_eq!(get_i64(&c, "sh:999", "score"), Some(92)); // 9.15 * 10 rounded
-        assert_eq!(get_str(&c, "sh:999", "score_source").as_deref(), Some("shikimori"));
+        assert_eq!(
+            get_str(&c, "sh:999", "score_source").as_deref(),
+            Some("shikimori")
+        );
     }
 
     #[test]
@@ -551,11 +614,17 @@ mod tests {
     fn the_merge_does_not_overwrite_a_rating_another_source_provided() {
         let c = conn();
         insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
-        c.execute("UPDATE anime SET score = 84, score_source = 'anilist' WHERE uid = 'al:16498'", [])
-            .unwrap();
+        c.execute(
+            "UPDATE anime SET score = 84, score_source = 'anilist' WHERE uid = 'al:16498'",
+            [],
+        )
+        .unwrap();
         upsert(&c, &item(16498)).unwrap();
         assert_eq!(get_i64(&c, "al:16498", "score"), Some(84));
-        assert_eq!(get_str(&c, "al:16498", "score_source").as_deref(), Some("anilist"));
+        assert_eq!(
+            get_str(&c, "al:16498", "score_source").as_deref(),
+            Some("anilist")
+        );
     }
 
     #[test]
@@ -571,12 +640,18 @@ mod tests {
         )
         .unwrap();
         upsert(&c, &item(16498)).unwrap();
-        assert_eq!(get_str(&c, "al:16498", "description_ru").as_deref(), Some("Гиганты"));
+        assert_eq!(
+            get_str(&c, "al:16498", "description_ru").as_deref(),
+            Some("Гиганты")
+        );
 
         let mut bare = item(16498);
         bare.description = None;
         upsert(&c, &bare).unwrap();
-        assert_eq!(get_str(&c, "al:16498", "description_ru").as_deref(), Some("Гиганты"));
+        assert_eq!(
+            get_str(&c, "al:16498", "description_ru").as_deref(),
+            Some("Гиганты")
+        );
     }
 
     #[test]
@@ -586,7 +661,10 @@ mod tests {
         upsert(&c, &item(16498)).unwrap();
         assert_eq!(get_i64(&c, "al:16498", "episodes"), Some(25));
         assert_eq!(get_i64(&c, "al:16498", "start_year"), Some(2013));
-        assert_eq!(get_str(&c, "al:16498", "start_date").as_deref(), Some("2013-04-07"));
+        assert_eq!(
+            get_str(&c, "al:16498", "start_date").as_deref(),
+            Some("2013-04-07")
+        );
         assert_eq!(
             get_str(&c, "al:16498", "cover_large").as_deref(),
             Some("https://shikimori.one/o.jpg")
@@ -637,7 +715,9 @@ mod tests {
         let c = conn();
         upsert(&c, &item(999)).unwrap();
         assert!(matches!(upsert(&c, &item(999)), Ok(Merge::Merged)));
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -665,7 +745,10 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(super::super::genres::match_uids(&c, &["al:1".to_string()]), 1);
+        assert_eq!(
+            super::super::genres::match_uids(&c, &["al:1".to_string()]),
+            1
+        );
         apply_genre_ru(&c).unwrap();
         let ru: Option<String> = c
             .query_row(
@@ -689,7 +772,11 @@ mod tests {
         .unwrap();
         apply_genre_ru(&c).unwrap();
         let ru: Option<String> = c
-            .query_row("SELECT name_ru FROM genres WHERE slug = 'comedy'", [], |r| r.get(0))
+            .query_row(
+                "SELECT name_ru FROM genres WHERE slug = 'comedy'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(ru.as_deref(), Some("Комедия"));
     }

@@ -1,0 +1,85 @@
+name: CI
+
+# Three gates, all of them things the project already claims in its README and
+# never actually ran on its own: `cargo fmt --check`, `cargo clippy -D warnings`
+# and `cargo test`. There are 505 unit tests across all 32 Rust files, and until
+# this file existed nothing executed them except a human at a terminal.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: fmt · clippy · 505 tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose | head -1
+
+      # `.cargo/config.toml` replaces crates.io with a registry mirror, because
+      # the machine this was developed on resets TLS to crates.io. That
+      # replacement would apply here too, where crates.io is reachable and a
+      # mirror only makes the build slower and flakier. Turning it off is done
+      # by overwriting the file rather than by passing --config, so there is no
+      # shell quoting to get wrong.
+      - name: Use crates.io directly
+        run: |
+          printf '# CI: no source replacement, crates.io is reachable here.\n' > .cargo/config.toml
+          cat .cargo/config.toml
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # The suite is hermetic: fixtures are `serde_json::json!` literals, and the
+      # few tests that need a socket bind 127.0.0.1:0. No API keys, no network,
+      # no seeded database, so a failure here is a real failure.
+      - name: tests
+        run: cargo test --locked
+
+  rustore-signing:
+    name: RuStore key parser · ${{ matrix.shell }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The README claims the ASN.1 reader works on both PowerShell editions.
+        # The reader is hand-written so that it can, and this is what checks it.
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run
+        run: |
+          if ("${{ matrix.shell }}" -eq "pwsh") {
+            pwsh -NoProfile -File tools/test-rustore-signing.ps1
+          } else {
+            powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-rustore-signing.ps1
+          }

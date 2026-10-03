@@ -9,8 +9,8 @@ pub mod static_files;
 use actix_web::body::MessageBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::http::header::{HeaderName, HeaderValue};
-use actix_web::HttpRequest;
 use actix_web::Error;
+use actix_web::HttpRequest;
 use std::future::{ready, Ready};
 use std::rc::Rc;
 use std::time::Instant;
@@ -23,7 +23,6 @@ use std::time::Instant;
 /// `Cors` both change it, and a generic middleware in that chain fails to
 /// unify.
 pub struct Decorate;
-
 
 impl<S, B> Transform<S, ServiceRequest> for Decorate
 where
@@ -56,7 +55,8 @@ where
 {
     type Response = ServiceResponse<B>;
     type Error = Error;
-    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(
         &self,
@@ -93,7 +93,9 @@ where
                 );
                 h.insert(
                     HeaderName::from_static("permissions-policy"),
-                    HeaderValue::from_static("geolocation=(), microphone=(), camera=(), interest-cohort=()"),
+                    HeaderValue::from_static(
+                        "geolocation=(), microphone=(), camera=(), interest-cohort=()",
+                    ),
                 );
                 h.insert(
                     HeaderName::from_static("x-request-id"),
@@ -158,7 +160,6 @@ fn request_id() -> String {
     hex::encode(buf)
 }
 
-
 /// Same as [`client_key`] but for handlers, which receive an `HttpRequest`.
 ///
 /// The first hop of `x-forwarded-for` wins, because that is the client and
@@ -168,7 +169,11 @@ fn request_id() -> String {
 /// header directly. Both are a deployment decision, so what is pinned here is
 /// the documented behaviour rather than a claim that it is safe everywhere.
 pub fn client_key_from(req: &HttpRequest) -> String {
-    if let Some(v) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+    if let Some(v) = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(first) = v.split(',').next() {
             let t = first.trim();
             if !t.is_empty() {
@@ -211,8 +216,7 @@ mod tests {
     fn request_ids_do_not_all_look_the_same() {
         // A constant id would make the log impossible to correlate, and the
         // only way to notice is to ask twice.
-        let ids: std::collections::HashSet<String> =
-            (0..50).map(|_| request_id()).collect();
+        let ids: std::collections::HashSet<String> = (0..50).map(|_| request_id()).collect();
         assert!(ids.len() > 45, "слишком мало разных id: {}", ids.len());
     }
 
@@ -263,8 +267,14 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .wrap(Decorate)
-                .route("/x", web::get().to(|| async { HttpResponse::Ok().finish() }))
-                .route("/x", web::post().to(|| async { HttpResponse::Ok().finish() })),
+                .route(
+                    "/x",
+                    web::get().to(|| async { HttpResponse::Ok().finish() }),
+                )
+                .route(
+                    "/x",
+                    web::post().to(|| async { HttpResponse::Ok().finish() }),
+                ),
         )
         .await;
         let req = match method {
@@ -305,7 +315,13 @@ mod tests {
         // It has to look like an id, not like a placeholder, or the log line
         // and the response cannot be tied together.
         let res = decorated("POST").await;
-        let id = res.headers().get("x-request-id").unwrap().to_str().unwrap().to_string();
+        let id = res
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         assert_eq!(id.len(), 8, "id: {}", id);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "id: {}", id);
     }
@@ -319,6 +335,9 @@ mod tests {
             !res.headers().contains_key("content-security-policy"),
             "CSP на preflight"
         );
-        assert_eq!(res.headers().get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(
+            res.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
     }
 }

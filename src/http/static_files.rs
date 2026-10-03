@@ -78,11 +78,18 @@ fn not_modified(etag: &str, modified: Option<SystemTime>) -> HttpResponse {
 }
 
 fn etag_matches(req: &HttpRequest, etag: &str) -> bool {
-    let Some(header) = req.headers().get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) else {
+    let Some(header) = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    else {
         return false;
     };
     // `*` matches anything, and a weak comparison is what a cache needs here.
-    header.split(',').map(|s| s.trim()).any(|t| t == "*" || t.trim_start_matches("W/") == etag)
+    header
+        .split(',')
+        .map(|s| s.trim())
+        .any(|t| t == "*" || t.trim_start_matches("W/") == etag)
 }
 
 /// Resolves a URL path under `root`, or `None` if it would escape.
@@ -364,8 +371,14 @@ mod tests {
     fn a_plain_asset_is_revalidated_every_time() {
         // Nothing in frontend/static is content-hashed, so a long max-age
         // would keep serving yesterday's bundle after a deploy.
-        assert_eq!(cache_for(Path::new("/srv/f/static/app.js")), "public, no-cache");
-        assert_eq!(cache_for(Path::new("/srv/f/index.html")), "public, no-cache");
+        assert_eq!(
+            cache_for(Path::new("/srv/f/static/app.js")),
+            "public, no-cache"
+        );
+        assert_eq!(
+            cache_for(Path::new("/srv/f/index.html")),
+            "public, no-cache"
+        );
     }
 
     #[test]
@@ -386,12 +399,18 @@ mod tests {
         // `main.min.js` and `jquery-3.6.0.min.js` are not fingerprinted, and
         // caching them for a year would keep a stale bundle alive after a
         // deploy.
-        assert_eq!(cache_for(Path::new("/srv/f/static/main.min.js")), "public, no-cache");
+        assert_eq!(
+            cache_for(Path::new("/srv/f/static/main.min.js")),
+            "public, no-cache"
+        );
         assert_eq!(
             cache_for(Path::new("/srv/f/static/jquery-3.6.0.min.js")),
             "public, no-cache"
         );
-        assert_eq!(cache_for(Path::new("/srv/f/static/2.js")), "public, no-cache");
+        assert_eq!(
+            cache_for(Path::new("/srv/f/static/2.js")),
+            "public, no-cache"
+        );
     }
 
     #[test]
@@ -477,11 +496,29 @@ mod tests {
         let req = TestRequest::default().to_http_request();
         let res = serve(&req, &dir, "app.js").await;
         assert_eq!(res.status(), StatusCode::OK);
-        let ctype = res.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+        let ctype = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ctype.contains("javascript"), "content-type: {}", ctype);
-        assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), "public, no-cache");
-        let etag = res.headers().get(header::ETAG).unwrap().to_str().unwrap().to_string();
-        assert!(etag.starts_with('"') && etag.ends_with('"'), "etag: {}", etag);
+        assert_eq!(
+            res.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, no-cache"
+        );
+        let etag = res
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            etag.starts_with('"') && etag.ends_with('"'),
+            "etag: {}",
+            etag
+        );
         assert!(res.headers().get(header::LAST_MODIFIED).is_some());
 
         // The same validator turns the next request into a 304 with no body.
@@ -501,12 +538,7 @@ mod tests {
         std::fs::write(dir.join("каталог.txt"), b"ok").unwrap();
 
         let req = TestRequest::default().to_http_request();
-        let res = serve(
-            &req,
-            &dir,
-            "%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3.txt",
-        )
-        .await;
+        let res = serve(&req, &dir, "%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3.txt").await;
         assert_eq!(res.status(), StatusCode::OK);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -527,4 +559,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-

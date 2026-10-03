@@ -219,7 +219,13 @@ mod tests {
 
     #[test]
     fn an_empty_or_unparsable_score_is_none() {
-        for raw in [json!(""), json!("   "), json!("н/д"), json!("--"), json!(true)] {
+        for raw in [
+            json!(""),
+            json!("   "),
+            json!("н/д"),
+            json!("--"),
+            json!(true),
+        ] {
             let a: Anime = serde_json::from_value(json!({ "id": 1, "score": raw })).unwrap();
             assert_eq!(a.score, None, "score {:?} должен стать None", raw);
         }
@@ -263,10 +269,22 @@ mod tests {
         assert_eq!(a.episodes, Some(25));
         assert_eq!(a.episodes_aired, Some(25));
         assert_eq!(a.aired_on.as_deref(), Some("2013-04-07"));
-        assert_eq!(a.image.as_ref().unwrap().original.as_deref(), Some("https://shikimori.one/o.jpg"));
-        assert_eq!(a.studios.as_ref().unwrap()[0].russian.as_deref(), Some("Wit Studio"));
-        assert_eq!(a.genres.as_ref().unwrap()[0].name.as_deref(), Some("Action"));
-        assert_eq!(a.tags.as_ref().unwrap()[0].russian.as_deref(), Some("Военный"));
+        assert_eq!(
+            a.image.as_ref().unwrap().original.as_deref(),
+            Some("https://shikimori.one/o.jpg")
+        );
+        assert_eq!(
+            a.studios.as_ref().unwrap()[0].russian.as_deref(),
+            Some("Wit Studio")
+        );
+        assert_eq!(
+            a.genres.as_ref().unwrap()[0].name.as_deref(),
+            Some("Action")
+        );
+        assert_eq!(
+            a.tags.as_ref().unwrap()[0].russian.as_deref(),
+            Some("Военный")
+        );
         assert_eq!(a.rates.as_ref().unwrap().completed, Some(100));
     }
 

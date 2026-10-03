@@ -37,9 +37,18 @@ pub fn configure(cfg: &mut web::ServiceConfig, max_per_page: i64, cors_origins: 
             // --- watchlist ---
             .route("/favorites", web::get().to(handlers::favorites_list))
             .route("/favorites", web::post().to(handlers::favorites_upsert))
-            .route("/favorites/counts", web::get().to(handlers::favorites_counts))
-            .route("/favorites/{uid}", web::patch().to(handlers::favorites_upsert_path))
-            .route("/favorites/{uid}", web::delete().to(handlers::favorites_remove))
+            .route(
+                "/favorites/counts",
+                web::get().to(handlers::favorites_counts),
+            )
+            .route(
+                "/favorites/{uid}",
+                web::patch().to(handlers::favorites_upsert_path),
+            )
+            .route(
+                "/favorites/{uid}",
+                web::delete().to(handlers::favorites_remove),
+            )
             // --- images ---
             .route("/img", web::get().to(images::proxy))
             // Preflight catch-all, registered last so it only sees OPTIONS
@@ -151,8 +160,11 @@ mod tests {
         let db = test_db();
         seeded(&db);
         let app = app!(&db);
-        let res =
-            test::call_service(&app, test::TestRequest::get().uri("/api/anime").to_request()).await;
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/anime").to_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("x-total-count").unwrap(), "1");
         let v = body_json(res).await;
@@ -168,7 +180,9 @@ mod tests {
 
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/anime/al:16498").to_request(),
+            test::TestRequest::get()
+                .uri("/api/anime/al:16498")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -179,7 +193,9 @@ mod tests {
 
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/anime/al:99999").to_request(),
+            test::TestRequest::get()
+                .uri("/api/anime/al:99999")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -201,23 +217,67 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/anime/al:16498").to_request(),
+            test::TestRequest::get()
+                .uri("/api/anime/al:16498")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
         let v = body_json(res).await;
 
         for key in [
-            "uid", "ids", "title_romaji", "title_english", "title_native", "title_russian",
-            "synonyms", "format", "status", "description", "description_ru", "duration",
-            "episodes", "chapters", "volumes", "country", "is_adult", "season", "season_year",
-            "start_date", "end_date", "score", "score_source", "rating_count", "popularity",
-            "favourites", "trending", "cover_large", "cover_medium", "cover_small",
-            "cover_color", "banner", "trailer", "genres", "tags", "studios", "producers",
-            "licensors", "age_rating", "relations", "external_links", "streaming",
-            "recommendations", "characters", "staff", "updated_at",
+            "uid",
+            "ids",
+            "title_romaji",
+            "title_english",
+            "title_native",
+            "title_russian",
+            "synonyms",
+            "format",
+            "status",
+            "description",
+            "description_ru",
+            "duration",
+            "episodes",
+            "chapters",
+            "volumes",
+            "country",
+            "is_adult",
+            "season",
+            "season_year",
+            "start_date",
+            "end_date",
+            "score",
+            "score_source",
+            "rating_count",
+            "popularity",
+            "favourites",
+            "trending",
+            "cover_large",
+            "cover_medium",
+            "cover_small",
+            "cover_color",
+            "banner",
+            "trailer",
+            "genres",
+            "tags",
+            "studios",
+            "producers",
+            "licensors",
+            "age_rating",
+            "relations",
+            "external_links",
+            "streaming",
+            "recommendations",
+            "characters",
+            "staff",
+            "updated_at",
         ] {
-            assert!(v.get(key).is_some(), "detail.js читает data.{}, но в ответе нет", key);
+            assert!(
+                v.get(key).is_some(),
+                "detail.js читает data.{}, но в ответе нет",
+                key
+            );
         }
 
         // The ids block is looked up by key in the detail page, so a rename
@@ -262,7 +322,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/anime/al:16498").to_request(),
+            test::TestRequest::get()
+                .uri("/api/anime/al:16498")
+                .to_request(),
         )
         .await;
         let v = body_json(res).await;
@@ -271,13 +333,21 @@ mod tests {
         for (field, keys) in [
             ("external_links", vec!["site", "url", "type"]),
             ("streaming", vec!["site", "url", "title", "thumbnail"]),
-            ("recommendations", vec!["uid", "title", "rating", "format", "cover"]),
-            ("relations", vec!["relation", "uid", "title", "format", "status", "cover"]),
+            (
+                "recommendations",
+                vec!["uid", "title", "rating", "format", "cover"],
+            ),
+            (
+                "relations",
+                vec!["relation", "uid", "title", "format", "status", "cover"],
+            ),
             ("tags", vec!["name", "rank", "spoiler"]),
             ("characters", vec!["name", "image", "role", "voice_actor"]),
             ("staff", vec!["name", "image", "positions"]),
         ] {
-            let rows = v[field].as_array().unwrap_or_else(|| panic!("{} не массив", field));
+            let rows = v[field]
+                .as_array()
+                .unwrap_or_else(|| panic!("{} не массив", field));
             assert!(!rows.is_empty(), "{} пуст, поле не проверено", field);
             for key in keys {
                 assert!(
@@ -289,7 +359,11 @@ mod tests {
             }
         }
         // The trailer block and the ids block are objects, not lists.
-        assert!(v["trailer"].is_object() || v["trailer"].is_null(), "trailer: {}", v["trailer"]);
+        assert!(
+            v["trailer"].is_object() || v["trailer"].is_null(),
+            "trailer: {}",
+            v["trailer"]
+        );
         assert_eq!(v["age_rating"], "17+");
         assert_eq!(v["rating_count"], 1000);
     }
@@ -301,7 +375,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/anime/al:16498/raw").to_request(),
+            test::TestRequest::get()
+                .uri("/api/anime/al:16498/raw")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -316,7 +392,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/search/suggest?q=").to_request(),
+            test::TestRequest::get()
+                .uri("/api/search/suggest?q=")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -331,7 +409,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/search/suggest?q=shingeki").to_request(),
+            test::TestRequest::get()
+                .uri("/api/search/suggest?q=shingeki")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -344,7 +424,11 @@ mod tests {
         let db = test_db();
         seeded(&db);
         let app = app!(&db);
-        let res = test::call_service(&app, test::TestRequest::get().uri("/api/filters").to_request()).await;
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/filters").to_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         let v = body_json(res).await;
         assert_eq!(v["formats"][0], "TV");
@@ -356,7 +440,11 @@ mod tests {
     async fn the_genres_endpoint_answers() {
         let db = test_db();
         let app = app!(&db);
-        let res = test::call_service(&app, test::TestRequest::get().uri("/api/genres").to_request()).await;
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/genres").to_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         let v = body_json(res).await;
         assert!(v["genres"].as_array().is_some());
@@ -368,7 +456,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/genres/404/anime").to_request(),
+            test::TestRequest::get()
+                .uri("/api/genres/404/anime")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -379,7 +469,11 @@ mod tests {
         let db = test_db();
         seeded(&db);
         let app = app!(&db);
-        let res = test::call_service(&app, test::TestRequest::get().uri("/api/stats").to_request()).await;
+        let res = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/stats").to_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         let v = body_json(res).await;
         assert_eq!(v["anime"], 1);
@@ -396,7 +490,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/sync/status").to_request(),
+            test::TestRequest::get()
+                .uri("/api/sync/status")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -416,7 +512,9 @@ mod tests {
         let _claimed = crate::loader::try_begin_run().expect("флаг синхронизации");
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/sync/status").to_request(),
+            test::TestRequest::get()
+                .uri("/api/sync/status")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -432,7 +530,9 @@ mod tests {
         let app = app!(&db, .app_data(web::Data::new(std::sync::Arc::new(ctx))));
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/sync/status").to_request(),
+            test::TestRequest::get()
+                .uri("/api/sync/status")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -475,7 +575,8 @@ mod tests {
         let db = test_db();
         let app = app!(&db);
         for uri in ["/api/sync/start", "/api/sync/abort"] {
-            let res = test::call_service(&app, test::TestRequest::post().uri(uri).to_request()).await;
+            let res =
+                test::call_service(&app, test::TestRequest::post().uri(uri).to_request()).await;
             assert_eq!(res.status(), StatusCode::FORBIDDEN, "{}", uri);
         }
     }
@@ -486,7 +587,8 @@ mod tests {
         seeded(&db);
         let app = app!(&db);
         for uri in ["/api/favorites", "/api/favorites/counts"] {
-            let res = test::call_service(&app, test::TestRequest::get().uri(uri).to_request()).await;
+            let res =
+                test::call_service(&app, test::TestRequest::get().uri(uri).to_request()).await;
             assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{}", uri);
         }
     }
@@ -526,7 +628,9 @@ mod tests {
             test::TestRequest::post()
                 .uri("/api/favorites")
                 .insert_header(("authorization", format!("Bearer {}", token)))
-                .set_json(serde_json::json!({ "uid": "al:16498", "status": "watching", "score": 9 }))
+                .set_json(
+                    serde_json::json!({ "uid": "al:16498", "status": "watching", "score": 9 }),
+                )
                 .to_request(),
         )
         .await;
@@ -547,7 +651,10 @@ mod tests {
         let v = body_json(res).await;
         // The envelope, not a bare array: the client renders the watchlist and
         // the catalogue through one code path that reads `items` and `total`.
-        assert_eq!(v["items"][0]["uid"], "al:16498", "запись приклеена к каталогу");
+        assert_eq!(
+            v["items"][0]["uid"], "al:16498",
+            "запись приклеена к каталогу"
+        );
         assert_eq!(v["total"], 1, "ответ: {}", v);
         assert_eq!(v["has_more"], false);
         // The watchlist state travels with the row, which is how a card in the
@@ -673,7 +780,8 @@ mod tests {
     async fn the_image_proxy_needs_a_url() {
         let db = test_db();
         let app = app!(&db);
-        let res = test::call_service(&app, test::TestRequest::get().uri("/api/img").to_request()).await;
+        let res =
+            test::call_service(&app, test::TestRequest::get().uri("/api/img").to_request()).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -691,7 +799,10 @@ mod tests {
         )
         .await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
-        assert_eq!(res.headers().get("access-control-allow-origin").unwrap(), "*");
+        assert_eq!(
+            res.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
     }
 
     #[actix_web::test]
@@ -701,7 +812,8 @@ mod tests {
         // app-level default service in `main`, which is not part of this scope.)
         let db = test_db();
         let app = app!(&db);
-        let res = test::call_service(&app, test::TestRequest::get().uri("/api/nope").to_request()).await;
+        let res =
+            test::call_service(&app, test::TestRequest::get().uri("/api/nope").to_request()).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
@@ -711,7 +823,9 @@ mod tests {
         let app = app!(&db);
         let res = test::call_service(
             &app,
-            test::TestRequest::get().uri("/api/anime?page=second").to_request(),
+            test::TestRequest::get()
+                .uri("/api/anime?page=second")
+                .to_request(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);

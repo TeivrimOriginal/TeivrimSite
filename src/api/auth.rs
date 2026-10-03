@@ -50,7 +50,10 @@ pub fn authenticate(db: &Handle, header: Option<&str>) -> Option<i64> {
     if expires_at < now_ts() {
         // Expired rows are cleaned up lazily; deleting here is a single indexed
         // write and keeps the table from growing.
-        let _ = conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?1", params![hash]);
+        let _ = conn.execute(
+            "DELETE FROM auth_tokens WHERE token_hash = ?1",
+            params![hash],
+        );
         return None;
     }
     let _ = conn.execute(
@@ -115,16 +118,24 @@ pub fn register(db: &Handle, body: RegisterBody) -> ApiResult<AuthResponse> {
         return Err(ApiError::bad("Имя пользователя: от 3 до 32 символов"));
     }
     if username.chars().any(|c| c.is_control()) {
-        return Err(ApiError::bad("Имя пользователя содержит недопустимые символы"));
+        return Err(ApiError::bad(
+            "Имя пользователя содержит недопустимые символы",
+        ));
     }
     if body.password.chars().count() < MIN_PASSWORD_LEN {
-        return Err(ApiError::bad(format!("Пароль должен быть не короче {} символов", MIN_PASSWORD_LEN)));
+        return Err(ApiError::bad(format!(
+            "Пароль должен быть не короче {} символов",
+            MIN_PASSWORD_LEN
+        )));
     }
     if body.password.chars().count() > MAX_PASSWORD_LEN {
         return Err(ApiError::bad("Пароль слишком длинный"));
     }
 
-    let email = body.email.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
+    let email = body
+        .email
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty());
     if let Some(e) = &email {
         // Deliberately loose: a strict RFC check rejects valid addresses.
         if !e.contains('@') || e.len() > 254 || e.contains(char::is_whitespace) {
@@ -197,7 +208,10 @@ pub fn login(db: &Handle, body: LoginBody) -> ApiResult<AuthResponse> {
     }
 
     let now = now_ts();
-    let _ = conn.execute("UPDATE users SET last_login_at = ?1 WHERE id = ?2", params![now, id]);
+    let _ = conn.execute(
+        "UPDATE users SET last_login_at = ?1 WHERE id = ?2",
+        params![now, id],
+    );
     issue_session(&conn, id, &username, email, now)
 }
 
@@ -229,13 +243,19 @@ fn issue_session(
 
 pub fn logout(db: &Handle, header: Option<&str>) -> ApiResult<()> {
     let Some(raw) = header
-        .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
+        .and_then(|h| {
+            h.strip_prefix("Bearer ")
+                .or_else(|| h.strip_prefix("bearer "))
+        })
         .map(|s| s.trim().to_string())
     else {
         return Ok(());
     };
     let conn = db.conn().map_err(|e| ApiError::internal(e.to_string()))?;
-    conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?1", params![hash_token(&raw)])?;
+    conn.execute(
+        "DELETE FROM auth_tokens WHERE token_hash = ?1",
+        params![hash_token(&raw)],
+    )?;
     Ok(())
 }
 
@@ -253,15 +273,22 @@ pub fn public_user(conn: &Connection, user_id: i64) -> ApiResult<PublicUser> {
         },
     )
     .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => ApiError::Unauthorized("Сессия недействительна".into()),
+        rusqlite::Error::QueryReturnedNoRows => {
+            ApiError::Unauthorized("Сессия недействительна".into())
+        }
         other => ApiError::from(other),
     })
 }
 
 /// Drops expired sessions. Called on a timer from `main`.
 pub fn purge_expired(conn: &Connection) {
-    match conn.execute("DELETE FROM auth_tokens WHERE expires_at < ?1", params![now_ts()]) {
-        Ok(n) if n > 0 => crate::error::log_info(&format!("[auth] удалено просроченных сессий: {}", n)),
+    match conn.execute(
+        "DELETE FROM auth_tokens WHERE expires_at < ?1",
+        params![now_ts()],
+    ) {
+        Ok(n) if n > 0 => {
+            crate::error::log_info(&format!("[auth] удалено просроченных сессий: {}", n))
+        }
         Ok(_) => {}
         Err(e) => crate::error::log_warn(&format!("[auth] очистка сессий: {}", e)),
     }
@@ -376,7 +403,10 @@ mod tests {
             // An empty email is dropped rather than refused: it is what a
             // client that sends the field blank means.
             if bad.is_empty() {
-                assert!(register(&db.handle, b).is_ok(), "пустой e-mail должен приниматься");
+                assert!(
+                    register(&db.handle, b).is_ok(),
+                    "пустой e-mail должен приниматься"
+                );
                 continue;
             }
             let e = register(&db.handle, b).unwrap_err();
@@ -426,8 +456,14 @@ mod tests {
     fn the_right_password_opens_a_session() {
         let db = test_db();
         register(&db.handle, body("user", "password123")).unwrap();
-        let r = login(&db.handle, LoginBody { login: "user".into(), password: "password123".into() })
-            .unwrap();
+        let r = login(
+            &db.handle,
+            LoginBody {
+                login: "user".into(),
+                password: "password123".into(),
+            },
+        )
+        .unwrap();
         assert!(!r.token.is_empty());
         assert_eq!(r.user.username, "user");
     }
@@ -438,8 +474,14 @@ mod tests {
         let mut b = body("user", "password123");
         b.email = Some("a@b.c".into());
         register(&db.handle, b).unwrap();
-        let r = login(&db.handle, LoginBody { login: "a@b.c".into(), password: "password123".into() })
-            .unwrap();
+        let r = login(
+            &db.handle,
+            LoginBody {
+                login: "a@b.c".into(),
+                password: "password123".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(r.user.username, "user");
     }
 
@@ -447,16 +489,28 @@ mod tests {
     fn the_login_is_case_insensitive() {
         let db = test_db();
         register(&db.handle, body("User", "password123")).unwrap();
-        assert!(login(&db.handle, LoginBody { login: "USER".into(), password: "password123".into() })
-            .is_ok());
+        assert!(login(
+            &db.handle,
+            LoginBody {
+                login: "USER".into(),
+                password: "password123".into()
+            }
+        )
+        .is_ok());
     }
 
     #[test]
     fn a_wrong_password_is_unauthorised() {
         let db = test_db();
         register(&db.handle, body("user", "password123")).unwrap();
-        let e = login(&db.handle, LoginBody { login: "user".into(), password: "wrong".into() })
-            .unwrap_err();
+        let e = login(
+            &db.handle,
+            LoginBody {
+                login: "user".into(),
+                password: "wrong".into(),
+            },
+        )
+        .unwrap_err();
         assert_eq!(code(&e), StatusCode::UNAUTHORIZED);
     }
 
@@ -466,12 +520,22 @@ mod tests {
         // enumeration oracle.
         let db = test_db();
         register(&db.handle, body("user", "password123")).unwrap();
-        let unknown =
-            login(&db.handle, LoginBody { login: "nobody".into(), password: "password123".into() })
-                .unwrap_err();
-        let wrong =
-            login(&db.handle, LoginBody { login: "user".into(), password: "password123!".into() })
-                .unwrap_err();
+        let unknown = login(
+            &db.handle,
+            LoginBody {
+                login: "nobody".into(),
+                password: "password123".into(),
+            },
+        )
+        .unwrap_err();
+        let wrong = login(
+            &db.handle,
+            LoginBody {
+                login: "user".into(),
+                password: "password123!".into(),
+            },
+        )
+        .unwrap_err();
         assert_eq!(unknown.to_string(), wrong.to_string());
         assert_eq!(code(&unknown), code(&wrong));
     }
@@ -502,7 +566,14 @@ mod tests {
         // Read-only endpoints stay usable without a session, so this returns
         // None instead of failing the request.
         let db = test_db();
-        for h in [None, Some(""), Some("Bearer"), Some("Bearer "), Some("Basic abc"), Some("abc")] {
+        for h in [
+            None,
+            Some(""),
+            Some("Bearer"),
+            Some("Bearer "),
+            Some("Basic abc"),
+            Some("abc"),
+        ] {
             assert_eq!(authenticate(&db.handle, h), None, "заголовок {:?}", h);
         }
     }
@@ -519,7 +590,10 @@ mod tests {
     #[test]
     fn an_unknown_token_is_refused() {
         let db = test_db();
-        assert_eq!(authenticate(&db.handle, Some("Bearer not-a-real-token")), None);
+        assert_eq!(
+            authenticate(&db.handle, Some("Bearer not-a-real-token")),
+            None
+        );
     }
 
     #[test]
@@ -550,7 +624,10 @@ mod tests {
                 params![now_ts() - 1],
             )
             .unwrap();
-        assert_eq!(authenticate(&db.handle, Some(&format!("Bearer {}", r.token))), None);
+        assert_eq!(
+            authenticate(&db.handle, Some(&format!("Bearer {}", r.token))),
+            None
+        );
 
         let left: i64 = db
             .conn()
@@ -574,7 +651,11 @@ mod tests {
 
         let left: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM auth_tokens WHERE token_hash = ?1", [&hash], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM auth_tokens WHERE token_hash = ?1",
+                [&hash],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(left, 1);
     }

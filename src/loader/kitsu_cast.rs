@@ -59,7 +59,8 @@ pub async fn run(ctx: Ctx, limit: i64) -> Result<(), String> {
 
     if candidates.is_empty() {
         let c = ctx.db.conn().map_err(|e| e.to_string())?;
-        db::save_checkpoint(&c, SOURCE, TASK, 1, cp.total_saved, true).map_err(|e| e.to_string())?;
+        db::save_checkpoint(&c, SOURCE, TASK, 1, cp.total_saved, true)
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -85,7 +86,10 @@ pub async fn run(ctx: Ctx, limit: i64) -> Result<(), String> {
 
         if let (Err(e), Err(e2)) = (&characters, &staff) {
             errors += 1;
-            log_warn(&format!("[kitsu/cast] {} (uid={}): {} / {}", kitsu_id, uid, e, e2));
+            log_warn(&format!(
+                "[kitsu/cast] {} (uid={}): {} / {}",
+                kitsu_id, uid, e, e2
+            ));
             if errors >= 20 {
                 log_warn("[kitsu/cast] 20 ошибок подряд, останавливаю проход");
                 return Ok(());
@@ -131,10 +135,7 @@ pub async fn run(ctx: Ctx, limit: i64) -> Result<(), String> {
             let pct = (done as f64 / total as f64 * 100.0).round() as i64;
             log_info(&format!(
                 "[kitsu/cast] {}/{} ({}%), с персонажами: {}",
-                done,
-                total,
-                pct,
-                with_cast
+                done, total, pct, with_cast
             ));
         }
     }
@@ -427,4 +428,3 @@ mod tests {
         assert_eq!(staff[0]["name"], json!("Sasha"));
     }
 }
-

@@ -50,7 +50,10 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
                     Ok(v) => v,
                     Err(e) => {
                         log_error(&format!("[kitsu][{}] стр. {}: {}", sort, page, e));
-                        let _ = with_conn(&ctx, |c| { db::mark_error(c, SOURCE, &task, &e); Ok(()) });
+                        let _ = with_conn(&ctx, |c| {
+                            db::mark_error(c, SOURCE, &task, &e);
+                            Ok(())
+                        });
                         match failures.record() {
                             super::OnError::NextPage => {
                                 page += 1;
@@ -71,7 +74,9 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
             total = meta_total;
 
             if res.data.is_empty() {
-                with_conn(&ctx, |c| db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, true))?;
+                with_conn(&ctx, |c| {
+                    db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, true)
+                })?;
                 break;
             }
 
@@ -92,7 +97,14 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
                 }
             }
             with_conn(&ctx, |c| {
-                db::save_checkpoint(c, SOURCE, &task, page as i64, cp.total_saved + saved, !has_next)
+                db::save_checkpoint(
+                    c,
+                    SOURCE,
+                    &task,
+                    page as i64,
+                    cp.total_saved + saved,
+                    !has_next,
+                )
             })?;
 
             // Kitsu contributes studio names, so re-link genres for the page.
@@ -103,9 +115,11 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
             if !has_next || page % 20 == 0 || last_reported.elapsed().as_secs() >= 15 {
                 last_reported = Instant::now();
                 let in_db = with_conn(&ctx, |c| {
-                    c.query_row("SELECT COUNT(*) FROM anime WHERE kitsu_id IS NOT NULL", [], |r| {
-                        r.get::<_, i64>(0)
-                    })
+                    c.query_row(
+                        "SELECT COUNT(*) FROM anime WHERE kitsu_id IS NOT NULL",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
                 })
                 .unwrap_or(0);
                 log_info(&format!(
@@ -133,7 +147,10 @@ pub async fn run(ctx: Ctx) -> Result<(), String> {
     Ok(())
 }
 
-fn with_conn<T>(ctx: &Ctx, f: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>) -> Result<T, String> {
+fn with_conn<T>(
+    ctx: &Ctx,
+    f: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+) -> Result<T, String> {
     let c = ctx.db.conn().map_err(|e| e.to_string())?;
     f(&c).map_err(|e| {
         log_error(&format!("db: {}", e));
@@ -154,7 +171,11 @@ fn store_kitsu_genres(conn: &Connection, value: &serde_json::Value) -> Result<()
             Some(a) => a,
             None => continue,
         };
-        let name_en = attrs.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let name_en = attrs
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         if name_en.is_empty() {
             continue;
         }
@@ -177,7 +198,12 @@ fn store_kitsu_genres(conn: &Connection, value: &serde_json::Value) -> Result<()
              ON CONFLICT(slug) DO UPDATE SET
                 name_en  = COALESCE(genres.name_en, excluded.name_en),
                 category = COALESCE(excluded.category, genres.category)",
-            params![slug, name_en, if is_category { "category" } else { "genre" }, now_ts()],
+            params![
+                slug,
+                name_en,
+                if is_category { "category" } else { "genre" },
+                now_ts()
+            ],
         )?;
     }
     Ok(())
@@ -245,7 +271,11 @@ fn target_uid_for(res: &kitsu::Resource<Anime>, ext: &ExternalIds) -> String {
     }
 }
 
-fn upsert(conn: &Connection, res: &kitsu::Resource<Anime>, ext: &ExternalIds) -> Result<(), rusqlite::Error> {
+fn upsert(
+    conn: &Connection,
+    res: &kitsu::Resource<Anime>,
+    ext: &ExternalIds,
+) -> Result<(), rusqlite::Error> {
     let kitsu_id: i64 = res
         .id
         .parse()
@@ -292,10 +322,18 @@ fn upsert(conn: &Connection, res: &kitsu::Resource<Anime>, ext: &ExternalIds) ->
             alt.push(v.to_string());
         }
     }
-    let alt_json = if alt.is_empty() { None } else { serde_json::to_string(&alt).ok() };
+    let alt_json = if alt.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&alt).ok()
+    };
 
     // Kitsu reports a percentage already, so no /10 conversion is needed.
-    let score: Option<i64> = a.average_rating.as_ref().and_then(|s| s.trim().parse::<f64>().ok()).map(|v| v.round() as i64);
+    let score: Option<i64> = a
+        .average_rating
+        .as_ref()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|v| v.round() as i64);
     let score_source = score.map(|_| "kitsu");
 
     let format = a.subtype.as_ref().map(|s| normalize_format(s));
@@ -440,7 +478,9 @@ fn normalize_format(s: &str) -> String {
 
 /// `YYYY-MM-DD` (any prefix may be missing) -> `(year, month, day)`.
 fn split_iso(s: Option<&str>) -> (Option<i64>, Option<i64>, Option<i64>) {
-    let Some(s) = s else { return (None, None, None) };
+    let Some(s) = s else {
+        return (None, None, None);
+    };
     let mut it = s.split('-');
     let y = it.next().and_then(|v| v.trim().parse().ok());
     let m = it.next().and_then(|v| v.trim().parse().ok());
@@ -489,7 +529,10 @@ mod tests {
                     large: Some("l.jpg".into()),
                     ..ImageSet::default()
                 },
-                cover_image: Some(ImageSet { large: Some("cover.jpg".into()), ..ImageSet::default() }),
+                cover_image: Some(ImageSet {
+                    large: Some("cover.jpg".into()),
+                    ..ImageSet::default()
+                }),
                 ..Anime::default()
             },
             relationships: Default::default(),
@@ -497,13 +540,21 @@ mod tests {
     }
 
     fn get_str(c: &Connection, uid: &str, col: &str) -> Option<String> {
-        c.query_row(&format!("SELECT {} FROM anime WHERE uid = ?1", col), [uid], |r| r.get(0))
-            .unwrap()
+        c.query_row(
+            &format!("SELECT {} FROM anime WHERE uid = ?1", col),
+            [uid],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 
     fn get_i64(c: &Connection, uid: &str, col: &str) -> Option<i64> {
-        c.query_row(&format!("SELECT {} FROM anime WHERE uid = ?1", col), [uid], |r| r.get(0))
-            .unwrap()
+        c.query_row(
+            &format!("SELECT {} FROM anime WHERE uid = ?1", col),
+            [uid],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 
     // ------------------------------------------------------- format vocabulary
@@ -546,7 +597,10 @@ mod tests {
 
     #[test]
     fn a_full_iso_date_splits_into_three_numbers() {
-        assert_eq!(split_iso(Some("1998-04-03")), (Some(1998), Some(4), Some(3)));
+        assert_eq!(
+            split_iso(Some("1998-04-03")),
+            (Some(1998), Some(4), Some(3))
+        );
     }
 
     #[test]
@@ -574,7 +628,10 @@ mod tests {
 
     #[test]
     fn a_row_with_an_anilist_mapping_joins_the_anilist_row() {
-        let ext = ExternalIds { anilist_id: Some(16498), ..ExternalIds::default() };
+        let ext = ExternalIds {
+            anilist_id: Some(16498),
+            ..ExternalIds::default()
+        };
         assert_eq!(target_uid_for(&resource("12"), &ext), "al:16498");
     }
 
@@ -582,7 +639,10 @@ mod tests {
     fn a_row_without_an_anilist_mapping_gets_its_own_kitsu_uid() {
         // v1 invented a negative AniList id here, so a Kitsu-only title and an
         // AniList title could collide on one number.
-        let ext = ExternalIds { anilist_id: None, ..ExternalIds::default() };
+        let ext = ExternalIds {
+            anilist_id: None,
+            ..ExternalIds::default()
+        };
         assert_eq!(target_uid_for(&resource("12"), &ext), "ks:12");
     }
 
@@ -590,10 +650,15 @@ mod tests {
     fn a_kitsu_row_attaches_to_an_anilist_row_that_already_exists() {
         let c = conn();
         insert_anime(&c, "al:16498", Some("Shingeki no Kyojin"));
-        let ext = ExternalIds { anilist_id: Some(16498), ..ExternalIds::default() };
+        let ext = ExternalIds {
+            anilist_id: Some(16498),
+            ..ExternalIds::default()
+        };
         upsert(&c, &resource("12"), &ext).unwrap();
 
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1, "присоединение не должно создавать вторую строку");
         assert_eq!(get_i64(&c, "al:16498", "kitsu_id"), Some(12));
     }
@@ -609,7 +674,9 @@ mod tests {
         )
         .unwrap();
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
         assert_eq!(get_i64(&c, "al:16498", "rating_count"), Some(500_000));
     }
@@ -619,7 +686,9 @@ mod tests {
         let c = conn();
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
         let uid: String = c
-            .query_row("SELECT uid FROM anime WHERE kitsu_id = 12", [], |r| r.get(0))
+            .query_row("SELECT uid FROM anime WHERE kitsu_id = 12", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(uid, "ks:12");
     }
@@ -631,7 +700,9 @@ mod tests {
         r.id = "abc".into();
         let err = upsert(&c, &r, &ExternalIds::default());
         assert!(err.is_err());
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -641,8 +712,14 @@ mod tests {
     fn stores_the_kitsu_fields_under_our_own_column_names() {
         let c = conn();
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
-        assert_eq!(get_str(&c, "ks:12", "title_romaji").as_deref(), Some("Cowboy Bebop"));
-        assert_eq!(get_str(&c, "ks:12", "title_english").as_deref(), Some("Cowboy Bebop"));
+        assert_eq!(
+            get_str(&c, "ks:12", "title_romaji").as_deref(),
+            Some("Cowboy Bebop")
+        );
+        assert_eq!(
+            get_str(&c, "ks:12", "title_english").as_deref(),
+            Some("Cowboy Bebop")
+        );
         assert_eq!(
             get_str(&c, "ks:12", "title_native").as_deref(),
             Some("カウボーイビバップ")
@@ -653,7 +730,10 @@ mod tests {
         assert_eq!(get_i64(&c, "ks:12", "favourites"), Some(20_000));
         assert_eq!(get_i64(&c, "ks:12", "rating_count"), Some(500_000));
         assert_eq!(get_str(&c, "ks:12", "trailer_id").as_deref(), Some("xyz"));
-        assert_eq!(get_str(&c, "ks:12", "trailer_site").as_deref(), Some("youtube"));
+        assert_eq!(
+            get_str(&c, "ks:12", "trailer_site").as_deref(),
+            Some("youtube")
+        );
     }
 
     #[test]
@@ -663,7 +743,10 @@ mod tests {
         let c = conn();
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
         assert_eq!(get_i64(&c, "ks:12", "score"), Some(82));
-        assert_eq!(get_str(&c, "ks:12", "score_source").as_deref(), Some("kitsu"));
+        assert_eq!(
+            get_str(&c, "ks:12", "score_source").as_deref(),
+            Some("kitsu")
+        );
     }
 
     #[test]
@@ -689,7 +772,10 @@ mod tests {
     fn the_synopsis_is_stored_as_plain_text() {
         let c = conn();
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
-        assert_eq!(get_str(&c, "ks:12", "description").as_deref(), Some("A bounty hunter crew."));
+        assert_eq!(
+            get_str(&c, "ks:12", "description").as_deref(),
+            Some("A bounty hunter crew.")
+        );
     }
 
     #[test]
@@ -752,8 +838,15 @@ mod tests {
         // AniList's naming is hand-curated, so a Kitsu duplicate must enrich
         // the row rather than rename it.
         let c = conn();
-        upsert(&c, &resource("12"), &ExternalIds { anilist_id: Some(16498), ..ExternalIds::default() })
-            .unwrap();
+        upsert(
+            &c,
+            &resource("12"),
+            &ExternalIds {
+                anilist_id: Some(16498),
+                ..ExternalIds::default()
+            },
+        )
+        .unwrap();
         c.execute(
             "UPDATE anime SET title_romaji = 'Shingeki no Kyojin', score = 90, score_source = 'anilist'
              WHERE uid = 'al:16498'",
@@ -761,11 +854,24 @@ mod tests {
         )
         .unwrap();
 
-        upsert(&c, &resource("12"), &ExternalIds { anilist_id: Some(16498), ..ExternalIds::default() })
-            .unwrap();
-        assert_eq!(get_str(&c, "al:16498", "title_romaji").as_deref(), Some("Shingeki no Kyojin"));
+        upsert(
+            &c,
+            &resource("12"),
+            &ExternalIds {
+                anilist_id: Some(16498),
+                ..ExternalIds::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            get_str(&c, "al:16498", "title_romaji").as_deref(),
+            Some("Shingeki no Kyojin")
+        );
         assert_eq!(get_i64(&c, "al:16498", "score"), Some(90));
-        assert_eq!(get_str(&c, "al:16498", "score_source").as_deref(), Some("anilist"));
+        assert_eq!(
+            get_str(&c, "al:16498", "score_source").as_deref(),
+            Some("anilist")
+        );
     }
 
     #[test]
@@ -776,8 +882,15 @@ mod tests {
             [],
         )
         .unwrap();
-        upsert(&c, &resource("12"), &ExternalIds { anilist_id: Some(16498), ..ExternalIds::default() })
-            .unwrap();
+        upsert(
+            &c,
+            &resource("12"),
+            &ExternalIds {
+                anilist_id: Some(16498),
+                ..ExternalIds::default()
+            },
+        )
+        .unwrap();
         assert_eq!(get_i64(&c, "al:16498", "rating_count"), Some(500_000));
         assert_eq!(get_i64(&c, "al:16498", "favourites"), Some(20_000));
     }
@@ -804,7 +917,11 @@ mod tests {
                 .unwrap();
             mapped.map(|r| r.unwrap()).collect()
         };
-        assert_eq!(rows.len(), 2, "пустое имя и запись без attributes пропущены");
+        assert_eq!(
+            rows.len(),
+            2,
+            "пустое имя и запись без attributes пропущены"
+        );
         assert_eq!(rows[0].0, "Action");
         // `explicitly_requested` is Kitsu's word for "category", as opposed to
         // "tag" — the filter sheet shows the two groups separately.
@@ -839,7 +956,9 @@ mod tests {
         let v = json!({ "data": [{ "attributes": { "name": "Action", "slug": "action" } }]});
         store_kitsu_genres(&c, &v).unwrap();
         store_kitsu_genres(&c, &v).unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM genres", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM genres", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -856,11 +975,16 @@ mod tests {
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
 
         let ru: Vec<String> = {
-            let mut stmt = c.prepare("SELECT name_ru FROM genres ORDER BY slug").unwrap();
+            let mut stmt = c
+                .prepare("SELECT name_ru FROM genres ORDER BY slug")
+                .unwrap();
             let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
             rows.map(|r| r.unwrap()).collect()
         };
-        assert_eq!(ru, vec!["Боевик".to_string(), "Научная фантастика".to_string()]);
+        assert_eq!(
+            ru,
+            vec!["Боевик".to_string(), "Научная фантастика".to_string()]
+        );
     }
 
     #[test]
@@ -870,11 +994,18 @@ mod tests {
         let c = conn();
         let v = json!({ "data": [{ "attributes": { "name": "Action", "slug": "action" } }]});
         store_kitsu_genres(&c, &v).unwrap();
-        c.execute("UPDATE genres SET name_ru = 'Боевик (Shikimori)' WHERE slug = 'action'", [])
-            .unwrap();
+        c.execute(
+            "UPDATE genres SET name_ru = 'Боевик (Shikimori)' WHERE slug = 'action'",
+            [],
+        )
+        .unwrap();
         upsert(&c, &resource("12"), &ExternalIds::default()).unwrap();
         let ru: String = c
-            .query_row("SELECT name_ru FROM genres WHERE slug = 'action'", [], |r| r.get(0))
+            .query_row(
+                "SELECT name_ru FROM genres WHERE slug = 'action'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(ru, "Боевик (Shikimori)");
     }

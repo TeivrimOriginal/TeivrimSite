@@ -27,16 +27,14 @@ async fn limited(
     if decision.allowed {
         return Ok(());
     }
-    Err(
-        HttpResponse::TooManyRequests()
-            .insert_header(("retry-after", decision.retry_after.to_string()))
-            .json(serde_json::json!({
-                "error": {
-                    "code": "rate_limited",
-                    "message": "Слишком много запросов, попробуйте позже"
-                }
-            })),
-    )
+    Err(HttpResponse::TooManyRequests()
+        .insert_header(("retry-after", decision.retry_after.to_string()))
+        .json(serde_json::json!({
+            "error": {
+                "code": "rate_limited",
+                "message": "Слишком много запросов, попробуйте позже"
+            }
+        })))
 }
 
 /// Runs a blocking DB closure off the async worker threads.
@@ -121,7 +119,10 @@ pub async fn detail(
             // Detail pages change only when a sync touches the row, so a short
             // shared cache with stale-while-revalidate is safe and saves the
             // mobile client a round trip on back-navigation.
-            .insert_header(("cache-control", "public, max-age=120, stale-while-revalidate=600"))
+            .insert_header((
+                "cache-control",
+                "public, max-age=120, stale-while-revalidate=600",
+            ))
             .json(d),
         Err(e) => e.error_response(),
     }
@@ -199,7 +200,10 @@ pub async fn genres(
     q: web::Query<std::collections::HashMap<String, String>>,
 ) -> HttpResponse {
     let db = db.into_inner();
-    let category = q.get("category").cloned().filter(|c| c == "genre" || c == "tag" || c == "studio");
+    let category = q
+        .get("category")
+        .cloned()
+        .filter(|c| c == "genre" || c == "tag" || c == "studio");
     let min_count = q.get("min_count").and_then(|v| v.parse().ok()).unwrap_or(1);
 
     let result = db_block(move || {
@@ -249,7 +253,9 @@ pub async fn genre_anime(
     let result = db_block(move || {
         let conn = db.conn().map_err(|e| ApiError::internal(e.to_string()))?;
         let slug: String = conn
-            .query_row("SELECT slug FROM genres WHERE id = ?1", [genre_id], |r| r.get(0))
+            .query_row("SELECT slug FROM genres WHERE id = ?1", [genre_id], |r| {
+                r.get(0)
+            })
             .map_err(|_| ApiError::NotFound("Жанр не найден".into()))?;
         // Reuse the shared filter builder instead of duplicating the join.
         query.genre = Some(slug);
@@ -468,7 +474,10 @@ mod tests {
 
     #[test]
     fn the_bearer_header_is_the_token() {
-        assert_eq!(token_of(&req_with(vec![("authorization", "Bearer abc")])), Some("Bearer abc".into()));
+        assert_eq!(
+            token_of(&req_with(vec![("authorization", "Bearer abc")])),
+            Some("Bearer abc".into())
+        );
     }
 
     #[test]
@@ -543,7 +552,9 @@ mod tests {
         for _ in 0..3 {
             limited(&limiter, &r, 3).await.expect("первые три проходят");
         }
-        let res = limited(&limiter, &r, 3).await.expect_err("четвёртый отклонён");
+        let res = limited(&limiter, &r, 3)
+            .await
+            .expect_err("четвёртый отклонён");
         assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(res.headers().contains_key("retry-after"), "нет retry-after");
         assert!(res.headers().contains_key("content-type"), "ответ не JSON");
@@ -559,6 +570,9 @@ mod tests {
         limited(&limiter, &a, 2).await.expect("a");
         limited(&limiter, &a, 2).await.expect("a");
         limited(&limiter, &a, 2).await.expect_err("a исчерпал");
-        assert!(limited(&limiter, &b, 2).await.is_ok(), "b затронут чужой бюджетом");
+        assert!(
+            limited(&limiter, &b, 2).await.is_ok(),
+            "b затронут чужой бюджетом"
+        );
     }
 }

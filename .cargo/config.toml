@@ -1,22 +1,26 @@
 # Cargo registry mirror.
 #
 # crates.io is unreachable from this network (TLS resets), so downloads go
-# through a mirror. USTC is the default because it is both reachable and the
-# one this machine already has a warm cache for.
+# through a mirror. The registry cache is per-mirror, so switching mirrors
+# means re-fetching; the mirror below is the one this machine has a warm
+# cache for.
 #
-# If a build fails with "failed to download", swap in the commented alternative
-# below — the crate cache is per-mirror, so switching mirrors means re-fetching.
+# NOTE FOR CI AND OTHER MACHINES: this replacement applies to everyone who
+# clones the repository, including GitHub Actions, where crates.io is
+# perfectly reachable and a mirror only makes builds slower and flakier.
+# `.github/workflows/ci.yml` therefore overrides it back to the real index.
+# If you are reading this on a machine with a normal network and cargo
+# suddenly cannot download anything, comment the `[source.*]` blocks out.
 
 [source.crates-io]
-replace-with = "ustc"
+replace-with = "rsproxy"
 
-[source.ustc]
-registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+[source.rsproxy]
+registry = "sparse+https://rsproxy.cn/index/"
 
 # Alternatives, in the order worth trying:
-#   sparse+https://rsproxy.cn/index/
+#   sparse+https://mirrors.ustc.edu.cn/crates.io-index/
 #   sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/
-#   sparse+https://index.crates.io/
 
 [net]
 git-fetch-with-cli = true
@@ -27,3 +31,7 @@ timeout = 120
 multiplexing = true
 # rsproxy/USTC occasionally pause mid-transfer; do not treat that as fatal.
 low-speed-limit = 1
+# Without this, downloading from either mirror fails on Windows with
+# CRYPT_E_REVOCATION_OFFLINE: schannel tries to fetch the CRL over the same
+# blocked network and treats the timeout as a revoked certificate.
+check-revoke = false

@@ -77,7 +77,11 @@ impl Db {
             stats.0,
             stats.1,
             stats.2,
-            if fts { "да" } else { "нет (LIKE-режим)" }
+            if fts {
+                "да"
+            } else {
+                "нет (LIKE-режим)"
+            }
         ));
 
         Ok(handle)
@@ -609,7 +613,8 @@ pub(crate) mod testing {
         use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-        let path = std::env::temp_dir().join(format!("anime-db-test-{}-{}.db", std::process::id(), n));
+        let path =
+            std::env::temp_dir().join(format!("anime-db-test-{}-{}.db", std::process::id(), n));
         TestDb {
             handle: Db::open(&path, 2).unwrap_or_else(|e| panic!("Db::open: {}", e)),
             path,
@@ -630,7 +635,11 @@ pub(crate) mod testing {
         let sources = std::sync::Arc::new(
             crate::sources::Sources::new(&cfg).unwrap_or_else(|e| panic!("Sources: {}", e)),
         );
-        crate::loader::Ctx { db: handle, sources, cfg }
+        crate::loader::Ctx {
+            db: handle,
+            sources,
+            cfg,
+        }
     }
 }
 
@@ -666,7 +675,10 @@ mod tests {
         save_checkpoint(&c, "anilist", "sort:ID", 3, 150, true).unwrap();
         save_checkpoint(&c, "anilist", "sort:SCORE_DESC", 1, 50, false).unwrap();
         assert!(get_checkpoint(&c, "anilist", "sort:ID").finished);
-        assert_eq!(get_checkpoint(&c, "anilist", "sort:SCORE_DESC").last_page, 1);
+        assert_eq!(
+            get_checkpoint(&c, "anilist", "sort:SCORE_DESC").last_page,
+            1
+        );
         assert!(!get_checkpoint(&c, "anilist", "sort:TRENDING_DESC").finished);
     }
 
@@ -729,9 +741,11 @@ mod tests {
         mark_started(&c, "anilist").unwrap();
         mark_started(&c, "anilist").unwrap();
         let n: i64 = c
-            .query_row("SELECT COUNT(*) FROM sync_state WHERE task = 'run'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM sync_state WHERE task = 'run'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, 1);
     }
@@ -767,7 +781,9 @@ mod tests {
         insert_anime(&c, "al:1", Some("One"));
         rebuild_fts(&c).unwrap();
         rebuild_fts(&c).unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime_fts", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime_fts", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -788,7 +804,9 @@ mod tests {
         // same file must not fail: every statement is IF NOT EXISTS.
         let c = conn();
         apply_schema_on(&c).expect("second apply");
-        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        let v: i64 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
     }
 
@@ -810,7 +828,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM genres", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM genres", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -942,10 +962,16 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.starts_with("anime-v2-") && n.contains(".legacy-"))
             .collect();
-        assert!(leftovers.is_empty(), "файл v2 не должны трогать: {:?}", leftovers);
+        assert!(
+            leftovers.is_empty(),
+            "файл v2 не должны трогать: {:?}",
+            leftovers
+        );
 
         let c = Connection::open(&path).unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1, "данные на месте");
         drop(c);
         for suffix in ["", "-wal", "-shm"] {

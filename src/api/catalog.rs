@@ -24,11 +24,9 @@ impl Where {
         self.params.push(value);
     }
 
-
     fn raw(&mut self, sql: &str) {
         self.parts.push(sql.to_string());
     }
-
 
     pub fn sql(&self) -> String {
         if self.parts.is_empty() {
@@ -88,8 +86,12 @@ fn norm_enum(raw: &str, kind: &str) -> Option<String> {
         ("format", "ONA") => "ONA",
         ("format", "SPECIAL" | "SPECIALS") => "SPECIAL",
         ("format", "MUSIC" | "CLIP") => "MUSIC",
-        ("status", "FINISHED" | "RELEASED" | "COMPLETED" | "ЗАВЕРШЁН" | "ЗАВЕРШЕН") => "FINISHED",
-        ("status", "RELEASING" | "AIRING" | "CURRENT" | "ВЫХОДИТ" | "ИДЁТ") => "RELEASING",
+        ("status", "FINISHED" | "RELEASED" | "COMPLETED" | "ЗАВЕРШЁН" | "ЗАВЕРШЕН") => {
+            "FINISHED"
+        }
+        ("status", "RELEASING" | "AIRING" | "CURRENT" | "ВЫХОДИТ" | "ИДЁТ") => {
+            "RELEASING"
+        }
         ("status", "NOT_YET_RELEASED" | "UPCOMING" | "NOT_RELEASED" | "НЕ ВЫШЕЛ" | "ПРЕДСТОИТ") => {
             "NOT_YET_RELEASED"
         }
@@ -176,10 +178,16 @@ pub fn build_where(
     // NULL years are excluded on purpose: an entry with no known year is not in
     // any decade, and including it made every range filter look broken.
     if let Some(y) = q.year_from {
-        w.push("a.start_year IS NOT NULL AND a.start_year >= ?", SqlValue::Integer(y));
+        w.push(
+            "a.start_year IS NOT NULL AND a.start_year >= ?",
+            SqlValue::Integer(y),
+        );
     }
     if let Some(y) = q.year_to {
-        w.push("a.start_year IS NOT NULL AND a.start_year <= ?", SqlValue::Integer(y));
+        w.push(
+            "a.start_year IS NOT NULL AND a.start_year <= ?",
+            SqlValue::Integer(y),
+        );
     }
     if let Some(v) = q.score_from {
         w.push("a.score IS NOT NULL AND a.score >= ?", SqlValue::Integer(v));
@@ -233,8 +241,14 @@ pub fn build_where(
     }
 
     // ---- taxonomy joins ----
-    for (param, category) in [(q.genre.as_deref(), "genre"), (q.tag.as_deref(), "tag"), (q.studio.as_deref(), "studio")] {
-        let Some(slugs) = param.map(slug_list) else { continue };
+    for (param, category) in [
+        (q.genre.as_deref(), "genre"),
+        (q.tag.as_deref(), "tag"),
+        (q.studio.as_deref(), "studio"),
+    ] {
+        let Some(slugs) = param.map(slug_list) else {
+            continue;
+        };
         if slugs.is_empty() {
             continue;
         }
@@ -254,9 +268,7 @@ pub fn build_where(
     if let (Some(uid_user), Some(list)) = (user_id, q.in_list.as_deref()) {
         match list {
             "favorites" | "favourites" => {
-                w.raw(
-                    "a.uid IN (SELECT uid FROM favorites WHERE user_id = ? AND is_favorite = 1)",
-                );
+                w.raw("a.uid IN (SELECT uid FROM favorites WHERE user_id = ? AND is_favorite = 1)");
                 w.params.push(SqlValue::Integer(uid_user));
             }
             "all" => {
@@ -264,8 +276,9 @@ pub fn build_where(
                 w.params.push(SqlValue::Integer(uid_user));
             }
             other if VALID_STATUSES.contains(&other) => {
-                w.parts
-                    .push("a.uid IN (SELECT uid FROM favorites WHERE user_id = ? AND status = ?)".into());
+                w.parts.push(
+                    "a.uid IN (SELECT uid FROM favorites WHERE user_id = ? AND status = ?)".into(),
+                );
                 w.params.push(SqlValue::Integer(uid_user));
                 w.params.push(SqlValue::Text(other.to_string()));
             }
@@ -287,7 +300,9 @@ fn slug_list(raw: &str) -> Vec<String> {
 }
 
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Turns user input into an FTS5 MATCH expression: every whitespace-separated
@@ -413,7 +428,9 @@ pub fn query_list(
 
     let total: i64 = {
         let sql = format!("SELECT COUNT(*) FROM anime a{}", where_.sql());
-        conn.query_row(&sql, rusqlite::params_from_iter(where_.values()), |r| r.get(0))?
+        conn.query_row(&sql, rusqlite::params_from_iter(where_.values()), |r| {
+            r.get(0)
+        })?
     };
 
     let sql = format!(
@@ -437,7 +454,11 @@ pub fn query_list(
         }
     }
 
-    let total_pages = if per_page > 0 { (total + per_page - 1) / per_page } else { 0 };
+    let total_pages = if per_page > 0 {
+        (total + per_page - 1) / per_page
+    } else {
+        0
+    };
     let has_more = items.len() as i64 == per_page && offset + per_page < total;
     Ok(Paged {
         items,
@@ -451,7 +472,12 @@ pub fn query_list(
 
 /// Type-ahead suggestions, resolved through the same index as the main search
 /// but without the taxonomy joins, so it stays a single cheap query.
-pub fn query_suggest(conn: &Connection, term: &str, fts: bool, limit: i64) -> ApiResult<Vec<Suggestion>> {
+pub fn query_suggest(
+    conn: &Connection,
+    term: &str,
+    fts: bool,
+    limit: i64,
+) -> ApiResult<Vec<Suggestion>> {
     let limit = limit.clamp(1, 20);
     let term = term.trim();
     if term.is_empty() {
@@ -543,9 +569,24 @@ mod tests {
     #[test]
     fn every_documented_sort_maps_to_a_clause() {
         for s in [
-            "score", "score_asc", "rating_count", "rating_count_asc", "favourites", "trending",
-            "year", "year_asc", "title", "title_desc", "title_ru", "episodes", "episodes_asc",
-            "duration", "added", "updated", "id", "id_desc",
+            "score",
+            "score_asc",
+            "rating_count",
+            "rating_count_asc",
+            "favourites",
+            "trending",
+            "year",
+            "year_asc",
+            "title",
+            "title_desc",
+            "title_ru",
+            "episodes",
+            "episodes_asc",
+            "duration",
+            "added",
+            "updated",
+            "id",
+            "id_desc",
         ] {
             let clause = order_clause(s);
             assert!(clause.starts_with("ORDER BY "), "sort {} -> {}", s, clause);
@@ -557,7 +598,12 @@ mod tests {
         // The value is interpolated straight into SQL, so anything that is not
         // on the whitelist must be dropped, not escaped.
         for hostile in ["id; DROP TABLE anime", "", "1", "score--", "ORDER BY 1"] {
-            assert_eq!(order_clause(hostile), order_clause("popularity"), "sort {:?}", hostile);
+            assert_eq!(
+                order_clause(hostile),
+                order_clause("popularity"),
+                "sort {:?}",
+                hostile
+            );
         }
     }
 
@@ -571,7 +617,10 @@ mod tests {
     fn source_only_titles_sort_after_numbered_ones() {
         // `sh:` rows have no anilist_id, and putting them first would fill the
         // first page with long-tail stubs.
-        assert_eq!(order_clause("id"), "ORDER BY anilist_id IS NULL, anilist_id ASC");
+        assert_eq!(
+            order_clause("id"),
+            "ORDER BY anilist_id IS NULL, anilist_id ASC"
+        );
     }
 
     // ------------------------------------------------------- vocabularies
@@ -589,7 +638,12 @@ mod tests {
             ("specials", "SPECIAL"),
             ("OVA", "OVA"),
         ] {
-            assert_eq!(norm_enum(raw, "format").as_deref(), Some(want), "format {}", raw);
+            assert_eq!(
+                norm_enum(raw, "format").as_deref(),
+                Some(want),
+                "format {}",
+                raw
+            );
         }
     }
 
@@ -607,7 +661,12 @@ mod tests {
             ("cancelled", "CANCELLED"),
             ("отменен", "CANCELLED"),
         ] {
-            assert_eq!(norm_enum(raw, "status").as_deref(), Some(want), "status {}", raw);
+            assert_eq!(
+                norm_enum(raw, "status").as_deref(),
+                Some(want),
+                "status {}",
+                raw
+            );
         }
     }
 
@@ -624,7 +683,10 @@ mod tests {
         // Seasons are not on the list, and a source may invent a new one; the
         // value still has to reach the query or the filter silently drops it.
         assert_eq!(norm_enum("winter", "season").as_deref(), Some("WINTER"));
-        assert_eq!(norm_enum("made_up_format", "format").as_deref(), Some("MADE_UP_FORMAT"));
+        assert_eq!(
+            norm_enum("made_up_format", "format").as_deref(),
+            Some("MADE_UP_FORMAT")
+        );
     }
 
     // --------------------------------------------------------- where clause
@@ -658,7 +720,11 @@ mod tests {
         let w = build_where(&q(json!({ "q": "100%_" })), false, None, &no_genres());
         let sql = w.sql();
         assert!(sql.contains("ESCAPE '\\'"));
-        assert_eq!(w.values().len(), 5, "по одному параметру на каждое из пяти полей");
+        assert_eq!(
+            w.values().len(),
+            5,
+            "по одному параметру на каждое из пяти полей"
+        );
         match &w.values()[0] {
             SqlValue::Text(s) => assert_eq!(s, "%100\\%\\_%"),
             other => panic!("параметр не строка: {:?}", other),
@@ -669,7 +735,12 @@ mod tests {
     fn a_year_range_excludes_titles_with_no_year() {
         // v1 wrote `(start_year IS NULL OR start_year >= ?)`, so the "1990s"
         // filter included every yearless title in the catalogue.
-        let w = build_where(&q(json!({ "year_from": 1990, "year_to": 1999 })), true, None, &no_genres());
+        let w = build_where(
+            &q(json!({ "year_from": 1990, "year_to": 1999 })),
+            true,
+            None,
+            &no_genres(),
+        );
         let sql = w.sql();
         assert!(sql.contains("a.start_year IS NOT NULL AND a.start_year >= ?"));
         assert!(sql.contains("a.start_year IS NOT NULL AND a.start_year <= ?"));
@@ -678,7 +749,12 @@ mod tests {
 
     #[test]
     fn a_score_range_excludes_unscored_titles() {
-        let w = build_where(&q(json!({ "score_from": 50, "score_to": 90 })), true, None, &no_genres());
+        let w = build_where(
+            &q(json!({ "score_from": 50, "score_to": 90 })),
+            true,
+            None,
+            &no_genres(),
+        );
         let sql = w.sql();
         assert!(sql.contains("a.score IS NOT NULL AND a.score >= ?"));
         assert!(sql.contains("a.score IS NOT NULL AND a.score <= ?"));
@@ -724,7 +800,12 @@ mod tests {
     fn genre_slugs_are_normalised_before_they_reach_sql() {
         // The filter sheet sends "Sci-Fi, Action"; the table stores the
         // normalised slug, so the two have to be reconciled here.
-        let w = build_where(&q(json!({ "genre": "  Sci-Fi ,Action " })), true, None, &no_genres());
+        let w = build_where(
+            &q(json!({ "genre": "  Sci-Fi ,Action " })),
+            true,
+            None,
+            &no_genres(),
+        );
         let sql = w.sql();
         assert!(sql.contains("g.slug IN (?,?)"));
         assert!(sql.contains("g.category = ?"));
@@ -736,7 +817,14 @@ mod tests {
                 other => panic!("параметр не строка: {:?}", other),
             })
             .collect();
-        assert_eq!(values, vec!["sci-fi".to_string(), "action".to_string(), "genre".to_string()]);
+        assert_eq!(
+            values,
+            vec![
+                "sci-fi".to_string(),
+                "action".to_string(),
+                "genre".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -757,31 +845,55 @@ mod tests {
 
     #[test]
     fn flags_are_parsed_not_compared_as_strings() {
-        assert!(build_where(&q(json!({ "adult": "only" })), true, None, &no_genres())
-            .sql()
-            .contains("a.is_adult = 1"));
-        assert!(build_where(&q(json!({ "adult": "no" })), true, None, &no_genres())
-            .sql()
-            .contains("a.is_adult = 0"));
+        assert!(
+            build_where(&q(json!({ "adult": "only" })), true, None, &no_genres())
+                .sql()
+                .contains("a.is_adult = 1")
+        );
+        assert!(
+            build_where(&q(json!({ "adult": "no" })), true, None, &no_genres())
+                .sql()
+                .contains("a.is_adult = 0")
+        );
         // An unrecognised flag is no filter: the old `?adult=true` had to keep
         // working, and anything else must not exclude the adult titles.
-        assert_eq!(build_where(&q(json!({ "adult": "maybe" })), true, None, &no_genres()).sql(), "");
-        assert!(build_where(&q(json!({ "has_russian": "yes" })), true, None, &no_genres())
-            .sql()
-            .contains("a.title_russian IS NOT NULL"));
-        assert!(build_where(&q(json!({ "has_trailer": "1" })), true, None, &no_genres())
-            .sql()
-            .contains("a.trailer_id IS NOT NULL"));
+        assert_eq!(
+            build_where(&q(json!({ "adult": "maybe" })), true, None, &no_genres()).sql(),
+            ""
+        );
+        assert!(build_where(
+            &q(json!({ "has_russian": "yes" })),
+            true,
+            None,
+            &no_genres()
+        )
+        .sql()
+        .contains("a.title_russian IS NOT NULL"));
+        assert!(
+            build_where(&q(json!({ "has_trailer": "1" })), true, None, &no_genres())
+                .sql()
+                .contains("a.trailer_id IS NOT NULL")
+        );
     }
 
     #[test]
     fn the_watchlist_filter_needs_a_signed_in_user() {
         // Anonymous: silently ignoring the parameter is right, otherwise the
         // catalogue would come back empty for anyone not logged in.
-        let w = build_where(&q(json!({ "in_list": "favorites" })), true, None, &no_genres());
+        let w = build_where(
+            &q(json!({ "in_list": "favorites" })),
+            true,
+            None,
+            &no_genres(),
+        );
         assert_eq!(w.sql(), "");
 
-        let w = build_where(&q(json!({ "in_list": "favorites" })), true, Some(7), &no_genres());
+        let w = build_where(
+            &q(json!({ "in_list": "favorites" })),
+            true,
+            Some(7),
+            &no_genres(),
+        );
         assert!(w.sql().contains("favorites"));
         assert_eq!(w.values(), &[SqlValue::Integer(7)]);
     }
@@ -790,11 +902,21 @@ mod tests {
     fn a_named_watchlist_bucket_is_validated_against_the_known_statuses() {
         // The status is a bound parameter, so it is safe — but an unknown
         // bucket must not be honoured or the UI would show an empty tab.
-        let w = build_where(&q(json!({ "in_list": "watching" })), true, Some(7), &no_genres());
+        let w = build_where(
+            &q(json!({ "in_list": "watching" })),
+            true,
+            Some(7),
+            &no_genres(),
+        );
         assert!(w.sql().contains("AND status = ?"));
         assert_eq!(w.values().len(), 2);
 
-        let w = build_where(&q(json!({ "in_list": "nonsense" })), true, Some(7), &no_genres());
+        let w = build_where(
+            &q(json!({ "in_list": "nonsense" })),
+            true,
+            Some(7),
+            &no_genres(),
+        );
         assert_eq!(w.sql(), "");
     }
 
@@ -827,7 +949,10 @@ mod tests {
 
     #[test]
     fn fts_expr_drops_punctuation_but_keeps_digits_and_underscores() {
-        assert_eq!(fts_expr("re:zero").as_deref(), Some("\"re\"* AND \"zero\"*"));
+        assert_eq!(
+            fts_expr("re:zero").as_deref(),
+            Some("\"re\"* AND \"zero\"*")
+        );
         assert_eq!(fts_expr("5").as_deref(), Some("\"5\"*"));
         assert_eq!(fts_expr("_x_").as_deref(), Some("\"_x_\"*"));
     }
@@ -836,7 +961,10 @@ mod tests {
     fn fts_expr_keeps_cyrillic() {
         // `unicode61` folds Cyrillic case, which plain LIKE cannot do. This is
         // the single reason the FTS path exists.
-        assert_eq!(fts_expr("Атака Титанов").as_deref(), Some("\"Атака\"* AND \"Титанов\"*"));
+        assert_eq!(
+            fts_expr("Атака Титанов").as_deref(),
+            Some("\"Атака\"* AND \"Титанов\"*")
+        );
     }
 
     #[test]
@@ -852,7 +980,12 @@ mod tests {
     fn fts_expr_cannot_be_broken_out_of() {
         // The expression is interpolated into SQL, so every term has to be
         // fully quoted: a bare quote or a bare keyword must not survive.
-        for hostile in ["\" OR 1=1 --", "a\"* AND anime_fts MATCH \"b", "^x", "'; DROP TABLE anime; --"] {
+        for hostile in [
+            "\" OR 1=1 --",
+            "a\"* AND anime_fts MATCH \"b",
+            "^x",
+            "'; DROP TABLE anime; --",
+        ] {
             let e = fts_expr(hostile).unwrap();
             for term in e.split(" AND ") {
                 assert!(
@@ -930,7 +1063,8 @@ mod tests {
     fn the_last_page_reports_no_more() {
         let c = conn();
         seed(&c);
-        let page = query_list(&c, &q(json!({ "per_page": 3, "page": 2 })), false, None, 48).unwrap();
+        let page =
+            query_list(&c, &q(json!({ "per_page": 3, "page": 2 })), false, None, 48).unwrap();
         assert_eq!(page.items.len(), 1);
         assert!(!page.has_more);
         assert_eq!(page.total_pages, 2);
@@ -952,7 +1086,8 @@ mod tests {
     fn a_zero_or_negative_page_number_is_clamped_to_one() {
         let c = conn();
         seed(&c);
-        let page = query_list(&c, &q(json!({ "page": 0, "per_page": 2 })), false, None, 48).unwrap();
+        let page =
+            query_list(&c, &q(json!({ "page": 0, "per_page": 2 })), false, None, 48).unwrap();
         assert_eq!(page.page, 1);
         assert_eq!(page.items.len(), 2);
     }
@@ -973,8 +1108,11 @@ mod tests {
         // user's: Russian, then romaji, then english, then the native one.
         let c = conn();
         seed(&c);
-        c.execute("UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'", [])
-            .unwrap();
+        c.execute(
+            "UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'",
+            [],
+        )
+        .unwrap();
         c.execute(
             "UPDATE anime SET title_romaji = NULL, title_english = 'Demon Slayer' WHERE uid = 'al:3'",
             [],
@@ -989,7 +1127,10 @@ mod tests {
         let by_uid: BTreeMap<&str, &AnimeSummary> =
             page.items.iter().map(|i| (i.uid.as_str(), i)).collect();
         assert_eq!(by_uid["al:1"].title, "Атака Титанов");
-        assert_eq!(by_uid["al:2"].title, "Без названия", "у al:2 не осталось ни одного названия");
+        assert_eq!(
+            by_uid["al:2"].title, "Без названия",
+            "у al:2 не осталось ни одного названия"
+        );
         assert_eq!(by_uid["al:3"].title, "Demon Slayer");
         // The dropped titles are still in the response for the detail page.
         assert_eq!(by_uid["al:3"].title_romaji, None);
@@ -1000,8 +1141,11 @@ mod tests {
         // Long-tail `sh:` rows can have no title at all; the grid shows a
         // placeholder rather than a blank card.
         let c = conn();
-        c.execute("INSERT INTO anime (uid, is_adult, created_at) VALUES ('sh:1', 0, 1)", [])
-            .unwrap();
+        c.execute(
+            "INSERT INTO anime (uid, is_adult, created_at) VALUES ('sh:1', 0, 1)",
+            [],
+        )
+        .unwrap();
         let page = query_list(&c, &q(json!({})), false, None, 48).unwrap();
         assert_eq!(page.items[0].title, "Без названия");
     }
@@ -1010,8 +1154,14 @@ mod tests {
     fn sorting_by_score_puts_the_best_first() {
         let c = conn();
         seed(&c);
-        let page = query_list(&c, &q(json!({ "sort": "score", "per_page": 10 })), false, None, 48)
-            .unwrap();
+        let page = query_list(
+            &c,
+            &q(json!({ "sort": "score", "per_page": 10 })),
+            false,
+            None,
+            48,
+        )
+        .unwrap();
         let scores: Vec<Option<i64>> = page.items.iter().map(|i| i.score).collect();
         assert_eq!(scores, vec![Some(90), Some(84), Some(82), Some(78)]);
     }
@@ -1020,9 +1170,16 @@ mod tests {
     fn an_unrated_title_sorts_last() {
         let c = conn();
         seed(&c);
-        c.execute("UPDATE anime SET score = NULL WHERE uid = 'al:1'", []).unwrap();
-        let page = query_list(&c, &q(json!({ "sort": "score", "per_page": 10 })), false, None, 48)
+        c.execute("UPDATE anime SET score = NULL WHERE uid = 'al:1'", [])
             .unwrap();
+        let page = query_list(
+            &c,
+            &q(json!({ "sort": "score", "per_page": 10 })),
+            false,
+            None,
+            48,
+        )
+        .unwrap();
         assert_eq!(page.items.last().unwrap().uid, "al:1");
     }
 
@@ -1042,9 +1199,16 @@ mod tests {
     fn the_year_range_excludes_yearless_titles_for_real() {
         let c = conn();
         seed(&c);
-        c.execute("UPDATE anime SET start_year = NULL WHERE uid = 'al:1'", []).unwrap();
-        let page = query_list(&c, &q(json!({ "year_from": 2000, "year_to": 2010 })), false, None, 48)
+        c.execute("UPDATE anime SET start_year = NULL WHERE uid = 'al:1'", [])
             .unwrap();
+        let page = query_list(
+            &c,
+            &q(json!({ "year_from": 2000, "year_to": 2010 })),
+            false,
+            None,
+            48,
+        )
+        .unwrap();
         let uids: Vec<&str> = page.items.iter().map(|i| i.uid.as_str()).collect();
         assert_eq!(uids, vec!["ks:4"]);
     }
@@ -1066,8 +1230,11 @@ mod tests {
         // term here is written the way the column stores it.
         let c = conn();
         seed(&c);
-        c.execute("UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'", [])
-            .unwrap();
+        c.execute(
+            "UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'",
+            [],
+        )
+        .unwrap();
 
         let has_fts: i64 = c
             .query_row(
@@ -1111,8 +1278,11 @@ mod tests {
     fn suggest_prefers_the_russian_title() {
         let c = conn();
         seed(&c);
-        c.execute("UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'", [])
-            .unwrap();
+        c.execute(
+            "UPDATE anime SET title_russian = 'Атака Титанов' WHERE uid = 'al:1'",
+            [],
+        )
+        .unwrap();
         let v = query_suggest(&c, "Титанов", false, 8).unwrap();
         assert_eq!(v[0].title, "Атака Титанов");
         assert_eq!(v[0].uid, "al:1");

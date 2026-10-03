@@ -242,8 +242,8 @@ pub async fn fetch_page(
 ) -> Result<(Page<Anime>, Vec<ExternalIds>, u64), String> {
     let url = page_url(page, per_page, sort, true);
     let value = up.get_json(&url).await?;
-    let parsed: Page<Anime> = serde_json::from_value(value)
-        .map_err(|e| format!("kitsu: не разобрался ответ: {}", e))?;
+    let parsed: Page<Anime> =
+        serde_json::from_value(value).map_err(|e| format!("kitsu: не разобрался ответ: {}", e))?;
     let ids = resolve_external_ids(&parsed);
     let total = parsed.meta.count;
     Ok((parsed, ids, total))
@@ -262,8 +262,14 @@ pub async fn fetch_characters(
 }
 
 /// Staff for one entry.
-pub async fn fetch_staff(up: &crate::upstream::Upstream, kitsu_id: &str) -> Result<serde_json::Value, String> {
-    let url = format!("{}/anime/{}/staff?page%5Blimit%5D=200&include=person", API, kitsu_id);
+pub async fn fetch_staff(
+    up: &crate::upstream::Upstream,
+    kitsu_id: &str,
+) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "{}/anime/{}/staff?page%5Blimit%5D=200&include=person",
+        API, kitsu_id
+    );
     up.get_json(&url).await
 }
 
@@ -273,9 +279,7 @@ pub async fn fetch_staff(up: &crate::upstream::Upstream, kitsu_id: &str) -> Resu
 /// it is asked for at the start of every pass. Reused for the life of the
 /// process; a restart is how a deployment picks up an edited list, which is
 /// cheaper than asking again on every refresh.
-pub async fn fetch_genres(
-    up: &crate::upstream::Upstream,
-) -> Result<serde_json::Value, String> {
+pub async fn fetch_genres(up: &crate::upstream::Upstream) -> Result<serde_json::Value, String> {
     up.get_json_cached(
         &format!("{}/genres?page%5Blimit%5D=200", API),
         crate::upstream::Freshness::Forever,
@@ -509,7 +513,12 @@ mod tests {
                 "meta": { "count": 1 }
             });
             let p: Page<Anime> = serde_json::from_value(v).unwrap();
-            assert_eq!(resolve_external_ids(&p)[0].mal_id, Some(42), "site {}", site);
+            assert_eq!(
+                resolve_external_ids(&p)[0].mal_id,
+                Some(42),
+                "site {}",
+                site
+            );
         }
     }
 

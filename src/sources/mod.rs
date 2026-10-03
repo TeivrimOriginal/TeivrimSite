@@ -42,7 +42,11 @@ impl Sources {
 /// here so the choice is a decision that can be read and tested on its own
 /// rather than two bare literals in a constructor.
 fn anilist_quota(has_client_id: bool) -> u32 {
-    if has_client_id { 85 } else { 28 }
+    if has_client_id {
+        85
+    } else {
+        28
+    }
 }
 
 /// The header list AniList is called with.

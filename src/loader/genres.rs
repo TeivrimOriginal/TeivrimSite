@@ -26,7 +26,9 @@ pub async fn match_all(ctx: Ctx) -> Result<(), String> {
         let batch: Vec<String> = {
             let c = ctx.db.conn().map_err(|e| e.to_string())?;
             let mut stmt = c
-                .prepare("SELECT uid FROM anime WHERE genres_matched_at IS NULL ORDER BY rowid LIMIT ?1")
+                .prepare(
+                    "SELECT uid FROM anime WHERE genres_matched_at IS NULL ORDER BY rowid LIMIT ?1",
+                )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([BATCH as i64], |r| r.get::<_, String>(0))
@@ -141,7 +143,13 @@ fn link_one(conn: &Connection, uid: &str) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-fn attach(tx: &Connection, uid: &str, name: &str, category: &str, source: &str) -> Result<(), rusqlite::Error> {
+fn attach(
+    tx: &Connection,
+    uid: &str,
+    name: &str,
+    category: &str,
+    source: &str,
+) -> Result<(), rusqlite::Error> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 80 {
         return Ok(());
@@ -159,7 +167,9 @@ fn attach(tx: &Connection, uid: &str, name: &str, category: &str, source: &str) 
                             THEN 'genre' ELSE genres.category END",
         params![slug, name, category, now_ts()],
     )?;
-    let gid: i64 = tx.query_row("SELECT id FROM genres WHERE slug = ?1", [&slug], |r| r.get(0))?;
+    let gid: i64 = tx.query_row("SELECT id FROM genres WHERE slug = ?1", [&slug], |r| {
+        r.get(0)
+    })?;
     tx.execute(
         "INSERT OR IGNORE INTO anime_genres (uid, genre_id, source) VALUES (?1, ?2, ?3)",
         params![uid, gid, source],
@@ -175,7 +185,11 @@ fn parse_object_names(json: &str) -> Vec<String> {
     serde_json::from_str::<Vec<serde_json::Value>>(json)
         .unwrap_or_default()
         .iter()
-        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .filter_map(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
         .collect()
 }
 
@@ -314,7 +328,13 @@ mod tests {
 
     /// One catalogue row with the given JSON blobs, as a source loader would
     /// have left it.
-    fn row(conn: &Connection, uid: &str, genres: Option<&str>, tags: Option<&str>, studios: Option<&str>) {
+    fn row(
+        conn: &Connection,
+        uid: &str,
+        genres: Option<&str>,
+        tags: Option<&str>,
+        studios: Option<&str>,
+    ) {
         conn.execute(
             "INSERT INTO anime (uid, genres_json, tags_json, studios_json, created_at)
              VALUES (?1, ?2, ?3, ?4, 1)",
@@ -324,7 +344,9 @@ mod tests {
     }
 
     fn slugs(conn: &Connection) -> Vec<String> {
-        let mut stmt = conn.prepare("SELECT slug FROM genres ORDER BY slug").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT slug FROM genres ORDER BY slug")
+            .unwrap();
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
         rows.map(|r| r.unwrap()).collect()
     }
@@ -334,12 +356,25 @@ mod tests {
     #[test]
     fn anilist_genres_become_genre_rows() {
         let c = conn();
-        row(&c, "al:1", Some(r#"["Action","Slice of Life"]"#), None, None);
+        row(
+            &c,
+            "al:1",
+            Some(r#"["Action","Slice of Life"]"#),
+            None,
+            None,
+        );
         assert_eq!(match_uids(&c, &["al:1".to_string()]), 1);
-        assert_eq!(slugs(&c), vec!["action".to_string(), "slice of life".to_string()]);
+        assert_eq!(
+            slugs(&c),
+            vec!["action".to_string(), "slice of life".to_string()]
+        );
 
         let category: String = c
-            .query_row("SELECT category FROM genres WHERE slug = 'action'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category FROM genres WHERE slug = 'action'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(category, "genre");
     }
@@ -360,7 +395,11 @@ mod tests {
         match_uids(&c, &["al:1".to_string()]);
 
         let category: String = c
-            .query_row("SELECT category FROM genres WHERE slug = 'male protagonist'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category FROM genres WHERE slug = 'male protagonist'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(category, "tag");
     }
@@ -377,7 +416,11 @@ mod tests {
         );
         match_uids(&c, &["ks:1".to_string()]);
         let category: String = c
-            .query_row("SELECT category FROM genres WHERE slug = 'wit studio'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category FROM genres WHERE slug = 'wit studio'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(category, "studio");
     }
@@ -396,7 +439,11 @@ mod tests {
         );
         match_uids(&c, &["al:1".to_string()]);
         let category: String = c
-            .query_row("SELECT category FROM genres WHERE slug = 'military'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category FROM genres WHERE slug = 'military'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(category, "genre");
     }
@@ -406,12 +453,25 @@ mod tests {
         // A truncated blob from a crashed import must not lose the whole row:
         // the link step is what makes the genre filter usable.
         let c = conn();
-        row(&c, "al:1", Some(r#"["Action", "#), Some("{oops"), Some("nope"));
+        row(
+            &c,
+            "al:1",
+            Some(r#"["Action", "#),
+            Some("{oops"),
+            Some("nope"),
+        );
         assert_eq!(match_uids(&c, &["al:1".to_string()]), 1);
-        assert!(slugs(&c).is_empty(), "битые данные не должны порождать строки");
+        assert!(
+            slugs(&c).is_empty(),
+            "битые данные не должны порождать строки"
+        );
 
         let marked: Option<i64> = c
-            .query_row("SELECT genres_matched_at FROM anime WHERE uid = 'al:1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT genres_matched_at FROM anime WHERE uid = 'al:1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(marked.is_some(), "строка всё равно помечена обработанной");
     }
@@ -479,7 +539,9 @@ mod tests {
         row(&c, "al:2", Some(r#"["action"]"#), None, None);
         match_uids(&c, &["al:1".to_string(), "al:2".to_string()]);
         assert_eq!(slugs(&c), vec!["action".to_string()]);
-        let links: i64 = c.query_row("SELECT COUNT(*) FROM anime_genres", [], |r| r.get(0)).unwrap();
+        let links: i64 = c
+            .query_row("SELECT COUNT(*) FROM anime_genres", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(links, 2);
     }
 
@@ -491,7 +553,10 @@ mod tests {
         row(&c, "al:1", Some(r#"["Action","Drama"]"#), None, None);
         row(&c, "al:2", Some(r#"["Action"]"#), None, None);
         row(&c, "al:3", Some(r#"["Horror"]"#), None, None);
-        match_uids(&c, &["al:1".to_string(), "al:2".to_string(), "al:3".to_string()]);
+        match_uids(
+            &c,
+            &["al:1".to_string(), "al:2".to_string(), "al:3".to_string()],
+        );
         apply_static_ru_sync(&c).unwrap();
 
         // `min_count` is inclusive, so a genre attached to a single title is
@@ -523,10 +588,17 @@ mod tests {
         row(&c, "al:1", Some(r#"["Action"]"#), None, None);
         row(&c, "al:2", Some(r#"["Drama"]"#), None, None);
         row(&c, "al:3", Some(r#"["Action","Drama"]"#), None, None);
-        match_uids(&c, &["al:1".to_string(), "al:2".to_string(), "al:3".to_string()]);
+        match_uids(
+            &c,
+            &["al:1".to_string(), "al:2".to_string(), "al:3".to_string()],
+        );
         let rows = list_genres(&c, None, 1).unwrap();
         let names: Vec<&str> = rows.iter().map(|r| r.name_en.as_str()).collect();
-        assert_eq!(names, vec!["Action", "Drama"], "две ссылки идут раньше одной");
+        assert_eq!(
+            names,
+            vec!["Action", "Drama"],
+            "две ссылки идут раньше одной"
+        );
         assert_eq!(rows[0].count, 2);
         assert_eq!(rows[1].count, 2);
     }
@@ -575,7 +647,10 @@ mod tests {
     fn parse_string_array_is_total() {
         assert!(parse_string_array("not json").is_empty());
         assert!(parse_string_array("{}").is_empty());
-        assert_eq!(parse_string_array(r#"["a","b"]"#), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            parse_string_array(r#"["a","b"]"#),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 
     #[test]
@@ -587,4 +662,3 @@ mod tests {
         assert!(parse_object_names("[1,2,3]").is_empty());
     }
 }
-

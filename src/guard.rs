@@ -180,7 +180,11 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "unwrap() в рабочем коде:\n{}", offenders.join("\n"));
+        assert!(
+            offenders.is_empty(),
+            "unwrap() в рабочем коде:\n{}",
+            offenders.join("\n")
+        );
     }
 
     #[test]
@@ -198,16 +202,24 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "непроверенный expect():\n{}", offenders.join("\n"));
-        assert!(!seen.is_empty(), "ни одного expect() — список ALLOWED_EXPECTS устарел");
+        assert!(
+            offenders.is_empty(),
+            "непроверенный expect():\n{}",
+            offenders.join("\n")
+        );
+        assert!(
+            !seen.is_empty(),
+            "ни одного expect() — список ALLOWED_EXPECTS устарел"
+        );
     }
 
     /// The exemption above is only sound while this file really is compiled
     /// away outside tests, so the claim is checked rather than assumed.
     #[test]
     fn this_module_is_test_only() {
-        let main = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
-            .expect("main.rs");
+        let main =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+                .expect("main.rs");
         assert!(
             main.contains("#[cfg(test)]\nmod guard;"),
             "src/guard.rs обязан быть подключён через #[cfg(test)] mod guard;"
@@ -226,7 +238,9 @@ mod frontend {
     /// while the two shells sit at the root, so the prefix is the caller's
     /// business rather than a guess made here.
     fn read(name: &str) -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend").join(name);
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("frontend")
+            .join(name);
         std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("не прочитан {}: {}", path.display(), e))
     }
@@ -281,20 +295,17 @@ mod frontend {
         let app = read_static("app.js");
         let ru = strings_table(&app, "ru");
         let en = strings_table(&app, "en");
-        assert!(!ru.is_empty() && !en.is_empty(), "таблицы пусты: ru={} en={}", ru.len(), en.len());
+        assert!(
+            !ru.is_empty() && !en.is_empty(),
+            "таблицы пусты: ru={} en={}",
+            ru.len(),
+            en.len()
+        );
 
         let only_ru: Vec<&String> = ru.difference(&en).collect();
         let only_en: Vec<&String> = en.difference(&ru).collect();
-        assert!(
-            only_ru.is_empty(),
-            "ключи есть только в ru: {:?}",
-            only_ru
-        );
-        assert!(
-            only_en.is_empty(),
-            "ключи есть только в en: {:?}",
-            only_en
-        );
+        assert!(only_ru.is_empty(), "ключи есть только в ru: {:?}", only_ru);
+        assert!(only_en.is_empty(), "ключи есть только в en: {:?}", only_en);
     }
 
     #[test]
@@ -323,7 +334,11 @@ mod frontend {
                 }
             }
         }
-        assert!(used.len() > 40, "найдено {} ключей — разбор сломался", used.len());
+        assert!(
+            used.len() > 40,
+            "найдено {} ключей — разбор сломался",
+            used.len()
+        );
 
         let missing: Vec<&String> = used
             .iter()
@@ -344,7 +359,9 @@ mod frontend {
             while let Some(at) = rest.find("data-i18n") {
                 rest = &rest[at..];
                 let Some(open) = rest.find('"') else { break };
-                let Some(close) = rest[open + 1..].find('"') else { break };
+                let Some(close) = rest[open + 1..].find('"') else {
+                    break;
+                };
                 let key = &rest[open + 1..open + 1 + close];
                 if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !key.is_empty() {
                     used.insert(key.to_string());
@@ -352,9 +369,20 @@ mod frontend {
                 rest = &rest[open + 1 + close..];
             }
         }
-        assert!(used.len() >= 10, "найдено {} ключей разметки — разбор сломался", used.len());
-        let missing: Vec<&String> = used.iter().filter(|k| !ru.contains(*k) || !en.contains(*k)).collect();
-        assert!(missing.is_empty(), "не переведены в разметке: {:?}", missing);
+        assert!(
+            used.len() >= 10,
+            "найдено {} ключей разметки — разбор сломался",
+            used.len()
+        );
+        let missing: Vec<&String> = used
+            .iter()
+            .filter(|k| !ru.contains(*k) || !en.contains(*k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "не переведены в разметке: {:?}",
+            missing
+        );
     }
 
     /// The status values the frontend offers have to be the ones the API
@@ -391,7 +419,11 @@ mod frontend {
         // Five, and `paused` among them: the parser has to be reading the table
         // rather than something smaller, or the rest of the test compares two
         // lists it invented.
-        assert!(offered.contains("paused"), "paused не разобран: {:?}", offered);
+        assert!(
+            offered.contains("paused"),
+            "paused не разобран: {:?}",
+            offered
+        );
         assert_eq!(offered.len(), 5, "разобрано: {:?}", offered);
         assert!(
             read_static("detail.js")
@@ -412,8 +444,10 @@ mod frontend {
             "catalog.js должен отбрасывать неизвестный in_list из ссылки"
         );
 
-        let api = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/catalog.rs"))
-            .expect("catalog.rs");
+        let api = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/catalog.rs"),
+        )
+        .expect("catalog.rs");
         let valid = api
             .lines()
             .find(|l| l.contains("VALID_STATUSES:"))
@@ -435,8 +469,13 @@ mod frontend {
             .expect("список статусов API");
         assert!(!accepted.is_empty(), "VALID_STATUSES пуст: {}", valid);
 
-        let not_accepted: Vec<&String> = offered.iter().filter(|s| !accepted.contains(*s)).collect();
-        assert!(not_accepted.is_empty(), "фронтенд предлагает, API отвергает: {:?}", not_accepted);
+        let not_accepted: Vec<&String> =
+            offered.iter().filter(|s| !accepted.contains(*s)).collect();
+        assert!(
+            not_accepted.is_empty(),
+            "фронтенд предлагает, API отвергает: {:?}",
+            not_accepted
+        );
 
         // The reverse is a bucket the API stores into and no screen can ever
         // show, and a status row that counts towards a tab nobody can open.
@@ -457,10 +496,8 @@ mod frontend {
     #[test]
     fn every_sort_the_frontend_offers_is_one_the_api_orders_by() {
         let catalog = read_static("catalog.js");
-        let start = catalog
-            .find("const SORTS = [")
-            .expect("SORTS в catalog.js")
-            + "const SORTS = [".len();
+        let start =
+            catalog.find("const SORTS = [").expect("SORTS в catalog.js") + "const SORTS = [".len();
         let end = catalog[start..].find("];").expect("SORTS не закрыт");
         let offered: BTreeSet<String> = catalog[start..start + end]
             .lines()
@@ -483,7 +520,10 @@ mod frontend {
             .filter(|l| l.contains("=> \"ORDER BY"))
             .filter_map(|l| l.split('"').nth(1).map(String::from))
             .collect();
-        assert!(accepted.contains("title_ru"), "список сортировок не разобран");
+        assert!(
+            accepted.contains("title_ru"),
+            "список сортировок не разобран"
+        );
 
         // `popularity` is the default arm of the match rather than a listed
         // one, so it is added back by hand — a chip for it is legitimate, and
@@ -492,7 +532,11 @@ mod frontend {
             .iter()
             .filter(|s| !accepted.contains(*s) && s.as_str() != "popularity")
             .collect();
-        assert!(unknown.is_empty(), "чип сортировки без ORDER BY в API: {:?}", unknown);
+        assert!(
+            unknown.is_empty(),
+            "чип сортировки без ORDER BY в API: {:?}",
+            unknown
+        );
     }
 
     /// The catalogue filter keys are the parameter names of `ListQuery`.
@@ -519,10 +563,9 @@ mod frontend {
             .collect();
         assert!(sent.len() >= 10, "разобрано: {:?}", sent);
 
-        let models = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/models.rs"),
-        )
-        .expect("models.rs");
+        let models =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/models.rs"))
+                .expect("models.rs");
         let query = models
             .split("pub struct ListQuery {")
             .nth(1)

@@ -50,8 +50,6 @@ pub struct ListQuery {
     pub in_list: Option<String>,
 }
 
-
-
 // ==================================================================
 // Responses
 // ==================================================================
@@ -481,9 +479,26 @@ mod tests {
         // camelCase and the grid broke when they drifted.
         let v = value(&summary());
         for key in [
-            "uid", "title", "title_romaji", "title_english", "title_russian", "title_native",
-            "cover", "cover_color", "score", "score_source", "format", "status", "episodes",
-            "duration", "year", "season", "season_year", "country", "is_adult", "genres",
+            "uid",
+            "title",
+            "title_romaji",
+            "title_english",
+            "title_russian",
+            "title_native",
+            "cover",
+            "cover_color",
+            "score",
+            "score_source",
+            "format",
+            "status",
+            "episodes",
+            "duration",
+            "year",
+            "season",
+            "season_year",
+            "country",
+            "is_adult",
+            "genres",
         ] {
             assert!(v.get(key).is_some(), "в ответе нет поля {}", key);
         }
@@ -564,7 +579,10 @@ mod tests {
         assert!(v.get("name_ru").is_some());
         assert_eq!(v["name_ru"], json!(null));
 
-        let g = Genre { count: Some(42), ..g };
+        let g = Genre {
+            count: Some(42),
+            ..g
+        };
         assert_eq!(value(&g)["count"], json!(42));
     }
 
@@ -617,7 +635,11 @@ mod tests {
 
         // A studio with no Russian name and no main flag shrinks to just the
         // name, which is what the credits list renders.
-        let bare = value(&NamedRef { name: "MAPPA".into(), name_ru: None, is_main: None });
+        let bare = value(&NamedRef {
+            name: "MAPPA".into(),
+            name_ru: None,
+            is_main: None,
+        });
         assert_eq!(bare.as_object().unwrap().len(), 1);
         assert_eq!(bare["name"], json!("MAPPA"));
     }
@@ -630,7 +652,12 @@ mod tests {
         // `"library": null` is not the same as "no watchlist entry".
         let d = AnimeDetail {
             uid: "al:1".into(),
-            ids: SourceIds { anilist: Some(1), kitsu: None, shikimori: None, mal: Some(20) },
+            ids: SourceIds {
+                anilist: Some(1),
+                kitsu: None,
+                shikimori: None,
+                mal: Some(20),
+            },
             title_romaji: Some("Shingeki no Kyojin".into()),
             title_english: None,
             title_native: None,
@@ -670,7 +697,11 @@ mod tests {
                 thumbnail: None,
             }),
             genres: vec![],
-            tags: vec![Tag { name: "Military".into(), rank: Some(80), spoiler: Some(false) }],
+            tags: vec![Tag {
+                name: "Military".into(),
+                rank: Some(80),
+                spoiler: Some(false),
+            }],
             studios: vec![],
             producers: vec![],
             licensors: vec![],
@@ -688,7 +719,10 @@ mod tests {
         assert!(v.get("library").is_none());
         assert_eq!(v["ids"]["anilist"], json!(1));
         assert_eq!(v["ids"]["kitsu"], json!(null));
-        assert_eq!(v["trailer"]["url"], json!("https://www.youtube.com/watch?v=abc"));
+        assert_eq!(
+            v["trailer"]["url"],
+            json!("https://www.youtube.com/watch?v=abc")
+        );
         assert!(v["trailer"].get("thumbnail").is_none());
         assert_eq!(v["tags"][0]["spoiler"], json!(false));
         // Arrays are always present, even when empty: the client iterates them
@@ -736,8 +770,8 @@ mod tests {
 
     #[test]
     fn a_login_body_is_username_or_email_under_one_field() {
-        let b: LoginBody = serde_json::from_value(json!({ "login": "a@b.c", "password": "x" }))
-            .unwrap();
+        let b: LoginBody =
+            serde_json::from_value(json!({ "login": "a@b.c", "password": "x" })).unwrap();
         assert_eq!(b.login, "a@b.c");
     }
 
@@ -764,4 +798,3 @@ mod tests {
         assert!(v["user"].get("password_hash").is_none());
     }
 }
-

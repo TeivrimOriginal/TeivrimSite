@@ -70,7 +70,9 @@ async fn main() -> std::io::Result<()> {
         ));
     }
 
-    let admin_token = std::env::var("SYNC_ADMIN_TOKEN").ok().filter(|t| !t.is_empty());
+    let admin_token = std::env::var("SYNC_ADMIN_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
     if admin_token.is_none() {
         log_warn("[sync] SYNC_ADMIN_TOKEN не задан — /api/sync/start и /api/sync/abort будут отклонять все запросы");
     }
@@ -93,10 +95,7 @@ async fn main() -> std::io::Result<()> {
         // The timer is started after the boot pass is queued, not after it
         // finishes: both take the same run flag, so whichever wakes up first
         // does the work and the other one skips.
-        loader::schedule::spawn(
-            (*ctx).clone(),
-            Duration::from_secs(cfg.sync_interval_secs),
-        );
+        loader::schedule::spawn((*ctx).clone(), Duration::from_secs(cfg.sync_interval_secs));
     } else {
         log_info("[sync] загрузчики отключены (LOADERS_ON_START=0)");
     }
@@ -168,7 +167,11 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-fn api_routes(root: PathBuf, max_per_page: i64, cors_origins: Vec<String>) -> impl FnOnce(&mut web::ServiceConfig) {
+fn api_routes(
+    root: PathBuf,
+    max_per_page: i64,
+    cors_origins: Vec<String>,
+) -> impl FnOnce(&mut web::ServiceConfig) {
     move |cfg: &mut web::ServiceConfig| {
         api::configure(cfg, max_per_page, &cors_origins);
         pages(cfg, root.clone());
@@ -213,20 +216,18 @@ fn pages(cfg: &mut web::ServiceConfig, root: PathBuf) {
         }),
     );
 
-    cfg.service(
-        web::resource("/static/{path:.*}").route(web::get().to({
+    cfg.service(web::resource("/static/{path:.*}").route(web::get().to({
+        let root = root.clone();
+        move |req: HttpRequest, path: web::Path<String>| {
             let root = root.clone();
-            move |req: HttpRequest, path: web::Path<String>| {
-                let root = root.clone();
-                async move {
-                    // The capture is the tail only, so the directory has to be
-                    // put back or every asset resolves one level too high.
-                    let rel = format!("static/{}", path.into_inner());
-                    http::static_files::serve(&req, &root, &rel).await
-                }
+            async move {
+                // The capture is the tail only, so the directory has to be
+                // put back or every asset resolves one level too high.
+                let rel = format!("static/{}", path.into_inner());
+                http::static_files::serve(&req, &root, &rel).await
             }
-        })),
-    );
+        }
+    })));
 
     // Well-known files that browsers and crawlers request from the site root
     // rather than from /static/.
@@ -257,9 +258,11 @@ fn pages(cfg: &mut web::ServiceConfig, root: PathBuf) {
     );
 
     cfg.default_service(web::to(|| async {
-        HttpResponse::NotFound().content_type("application/json").json(serde_json::json!({
-            "error": { "code": "not_found", "message": "Маршрут не найден" }
-        }))
+        HttpResponse::NotFound()
+            .content_type("application/json")
+            .json(serde_json::json!({
+                "error": { "code": "not_found", "message": "Маршрут не найден" }
+            }))
     }));
 }
 
