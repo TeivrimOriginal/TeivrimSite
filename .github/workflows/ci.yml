@@ -2,8 +2,9 @@ name: CI
 
 # Three gates, all of them things the project already claims in its README and
 # never actually ran on its own: `cargo fmt --check`, `cargo clippy -D warnings`
-# and `cargo test`. There are 505 unit tests across all 32 Rust files, and until
-# this file existed nothing executed them except a human at a terminal.
+# and `cargo test`. There are 564 unit tests across all 32 Rust files — 505 plain
+# `#[test]`, 31 `#[tokio::test]`, 28 `#[actix_web::test]` — and until this file
+# existed nothing executed them except a human at a terminal.
 
 on:
   push:
@@ -20,7 +21,7 @@ concurrency:
 
 jobs:
   rust:
-    name: fmt · clippy · 505 tests
+    name: fmt · clippy · 564 tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
