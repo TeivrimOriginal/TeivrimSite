@@ -195,6 +195,9 @@ mod tests {
         assert!(d.retry_after >= 1, "клиенту нужно сказать, когда вернуться");
         // A key that is already tracked keeps working: the cap must not lock out
         // clients that were admitted before it filled up.
-        assert!(l.check_n("10.0.0.0", 5).allowed, "уже известный ключ проходит");
+        assert!(
+            l.check_n("10.0.0.0", 5).allowed,
+            "уже известный ключ проходит"
+        );
     }
 }
