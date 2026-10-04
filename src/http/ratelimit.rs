@@ -50,6 +50,19 @@ impl Limiter {
             map.retain(|_, s| now.duration_since(s.window_start) < window);
         }
 
+        // The sweep only drops what has aged out, so on its own it does not bound
+        // anything: a tight loop of distinct spoofed keys crosses the cap inside
+        // a single pass, because none of them is old enough to be swept yet.
+        // Once the map is full, a key that is not already tracked is refused
+        // rather than added — an unseen client is exactly the case the cap exists
+        // for, and admitting it is what makes the map grow without bound.
+        if !map.contains_key(key) && map.len() >= self.max_keys {
+            return Decision {
+                allowed: false,
+                retry_after: self.window_secs.max(1),
+            };
+        }
+
         let entry = map.entry(key.to_string()).or_insert(State {
             count: 0,
             window_start: now,
@@ -156,13 +169,32 @@ mod tests {
 
     #[test]
     fn a_spoofed_forwarded_for_cannot_grow_the_map_without_bound() {
-        // The sweep only runs above the cap and drops what has aged out; what
-        // matters is that the map does not grow without limit.
-        let l = Limiter::new(1);
+        // The cap has to hold on its own, without waiting for entries to age
+        // out. This used to assert the same thing but only passed when the
+        // machine was slow enough for the first keys to age past the sweep
+        // window during the loop — on a cached build it ran in a fraction of
+        // the window and the map overshot.
+        let l = Limiter::new(600);
         for i in 0..30_000 {
-            l.check_n(&format!("10.0.0.{}", i % 65536), 5);
+            l.check_n(&format!("10.0.0.{}", i), 5);
         }
         let map = l.buckets.lock().unwrap();
         assert!(map.len() <= 20_000, "карта выросла до {}", map.len());
+    }
+
+    #[test]
+    fn a_full_map_refuses_keys_it_has_never_seen() {
+        // Refusing is the point: tracking an unseen key while the map is full is
+        // how a spoofed header inflates it.
+        let l = Limiter::new(600);
+        for i in 0..20_000 {
+            assert!(l.check_n(&format!("10.0.0.{}", i), 5).allowed, "ключ {}", i);
+        }
+        let d = l.check_n("10.9.9.9", 5);
+        assert!(!d.allowed, "новый ключ не должен попадать в полную карту");
+        assert!(d.retry_after >= 1, "клиенту нужно сказать, когда вернуться");
+        // A key that is already tracked keeps working: the cap must not lock out
+        // clients that were admitted before it filled up.
+        assert!(l.check_n("10.0.0.0", 5).allowed, "уже известный ключ проходит");
     }
 }
